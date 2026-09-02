@@ -145,19 +145,19 @@ adb install -r app/build/outputs/apk/release/AndroidMCP_v*.apk
 
 ```mermaid
 graph TD
-    Client[AI Agent / Claude / Antigravity] -->|HTTP / JSON-RPC 2.0| Server[Ktor 3.5 Embedded Server :8080]
-    WebUI[PC Web Dashboard] -->|HTTP REST / SSE| Server
+    Client["AI Agent / Claude / Antigravity"] -->|HTTP / JSON-RPC 2.0| Server["Ktor 3.5 Embedded Server :8080"]
+    WebUI["PC Web Dashboard"] -->|HTTP REST / SSE| Server
     
-    Server --> Handler[McpProtocolHandler]
+    Server --> Handler["McpProtocolHandler"]
     
-    Handler -->|内存级 Hook| HookMgr[LSPosed / YukiHookAPI]
-    Handler -->|特权 Shell / FS / DB| Root[RootBridge / su]
-    Handler -->|系统级输入 / 剪贴板| Sui[Sui / Shizuku Bridge]
-    Handler -->|视觉与 UI 分析| Vision[ScreenCapturer & UiTreeFlattener]
-    Handler -->|无障碍备用| A11y[AccessibilityService]
+    Handler -->|内存级 Hook| HookMgr["LSPosed / YukiHookAPI"]
+    Handler -->|特权 Shell / FS / DB| Root["RootBridge / su"]
+    Handler -->|系统级输入 / 剪贴板| Sui["Sui / Shizuku Bridge"]
+    Handler -->|视觉与 UI 分析| Vision["ScreenCapturer & UiTreeFlattener"]
+    Handler -->|无障碍备用| A11y["AccessibilityService"]
     
-    HookMgr --> TargetApp[目标应用进程 (In-Process)]
-    Root --> AndroidOS[Android 系统层 (System)]
+    HookMgr --> TargetApp["目标应用进程 (In-Process)"]
+    Root --> AndroidOS["Android 系统层 (System)"]
     Sui --> AndroidOS
 ```
 

@@ -124,4 +124,24 @@ object ShizukuBridge {
         val (code, _) = exec("input", "keyevent", keyCode.toString())
         return code == 0
     }
+
+    suspend fun takeScreenshotRaw(): ByteArray? = withContext(Dispatchers.IO) {
+        if (!isRunning() || !hasPermission()) return@withContext null
+        try {
+            val newProcessMethod = Shizuku::class.java.getDeclaredMethod(
+                "newProcess",
+                Array<String>::class.java,
+                Array<String>::class.java,
+                String::class.java
+            )
+            newProcessMethod.isAccessible = true
+            val process = newProcessMethod.invoke(null, arrayOf("screencap", "-p"), null, null) as Process
+            val bytes = process.inputStream.readBytes()
+            process.waitFor()
+            if (bytes.isNotEmpty()) bytes else null
+        } catch (e: Throwable) {
+            Log.e(TAG, "Failed to capture screenshot via Shizuku: ${e.message}")
+            null
+        }
+    }
 }

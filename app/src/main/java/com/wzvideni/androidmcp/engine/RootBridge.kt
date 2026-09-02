@@ -23,8 +23,8 @@ object RootBridge {
         return paths.any { dir -> File(dir, "su").exists() }
     }
 
-    suspend fun checkRootAsync(): Boolean = withContext(Dispatchers.IO) {
-        if (!isRootChecked) {
+    suspend fun checkRootAsync(force: Boolean = false): Boolean = withContext(Dispatchers.IO) {
+        if (!isRootChecked || !isRootGranted || force) {
             if (!hasSuBinary()) {
                 isRootGranted = false
                 isRootChecked = true
@@ -42,7 +42,7 @@ object RootBridge {
     }
 
     fun isRootAvailable(): Boolean {
-        if (!isRootChecked) {
+        if (!isRootChecked || !isRootGranted) {
             if (!hasSuBinary()) {
                 isRootGranted = false
                 isRootChecked = true

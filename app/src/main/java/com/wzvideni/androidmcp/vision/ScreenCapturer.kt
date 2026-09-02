@@ -26,16 +26,12 @@ object ScreenCapturer {
             }
         }
 
-        // 2. Try Shizuku screencap
+        // 2. Try Shizuku screencap (In-Memory byte stream, bypasses SELinux file restrictions)
         if (ShizukuBridge.hasPermission()) {
-            try {
-                val (code, _) = ShizukuBridge.exec("screencap", "-p", "/data/local/tmp/mcp_snap.png")
-                if (code == 0) {
-                    val bmp = BitmapFactory.decodeFile("/data/local/tmp/mcp_snap.png")
-                    if (bmp != null) return@withContext bmp
-                }
-            } catch (e: Throwable) {
-                Log.d(TAG, "Shizuku screencap failed: ${e.message}")
+            val raw = ShizukuBridge.takeScreenshotRaw()
+            if (raw != null) {
+                val bmp = BitmapFactory.decodeByteArray(raw, 0, raw.size)
+                if (bmp != null) return@withContext bmp
             }
         }
 

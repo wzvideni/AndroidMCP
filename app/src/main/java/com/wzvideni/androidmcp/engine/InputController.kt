@@ -10,7 +10,6 @@ import kotlinx.coroutines.withContext
 
 object InputController {
 
-    private const val TAG = "InputController"
 
     suspend fun click(
         x: Float,

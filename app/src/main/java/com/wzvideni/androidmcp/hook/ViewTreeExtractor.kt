@@ -10,6 +10,7 @@ import android.widget.TextView
 import com.wzvideni.androidmcp.model.RectBounds
 import com.wzvideni.androidmcp.model.UiNode
 import java.util.concurrent.atomic.AtomicInteger
+import androidx.core.view.isVisible
 
 /**
  * Extracts in-memory View hierarchy and Jetpack Compose semantics tree directly inside the target process.
@@ -38,7 +39,7 @@ object ViewTreeExtractor {
             @Suppress("UNCHECKED_CAST")
             val views = (mViewsField.get(wmg) as? ArrayList<View>) ?: emptyList()
             for (v in views) {
-                if (v.visibility == View.VISIBLE) {
+                if (v.isVisible) {
                     rootChildren.add(extractViewNode(packageName, v, idCounter))
                 }
             }
@@ -109,7 +110,7 @@ object ViewTreeExtractor {
         } else if (view is ViewGroup) {
             for (i in 0 until view.childCount) {
                 val child = view.getChildAt(i)
-                if (child != null && child.visibility == View.VISIBLE) {
+                if (child != null && child.isVisible) {
                     children.add(extractViewNode(packageName, child, idCounter))
                 }
             }
@@ -131,9 +132,9 @@ object ViewTreeExtractor {
             enabled = view.isEnabled,
             focused = view.isFocused,
             selected = view.isSelected,
-            visible = view.visibility == View.VISIBLE,
+            visible = view.isVisible,
             children = children,
-            extras = if (extras.isNotEmpty()) extras else null
+            extras = extras.ifEmpty { null }
         )
     }
 

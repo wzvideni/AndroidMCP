@@ -19,6 +19,11 @@ class HookEntry : IYukiHookXposedInit {
     }
 
     override fun onHook() = encase {
+        loadSystem {
+            // Start Hook IPC server when injected into system framework (android / system_server)
+            HookIpcServer.ensureServerStarted("android")
+        }
+
         loadApp {
             // Avoid hooking our own module process unnecessarily
             if (packageName == BuildConfig.APPLICATION_ID) return@loadApp

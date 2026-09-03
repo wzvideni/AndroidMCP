@@ -1,27 +1,36 @@
 package com.wzvideni.androidmcp.engine
 
-import android.app.ActivityManager
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
 import android.util.DisplayMetrics
 import android.view.WindowManager
+import androidx.core.net.toUri
 import com.highcapable.yukihookapi.YukiHookAPI
+import com.wzvideni.androidmcp.hook.HookClientManager
 import com.wzvideni.androidmcp.model.DeviceInfo
 import com.wzvideni.androidmcp.model.PrivilegeStatus
-import com.wzvideni.androidmcp.hook.HookClientManager
-import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.NetworkInterface
 import java.util.Collections
 
-object PrivilegeManager {
+/**
+ * 特权与系统状态管理器。
+ * 通过依赖注入接收系统服务（WindowManager, BatteryManager, PackageManager, UsageStatsManager），
+ * 负责设备信息读取、前台应用检测、应用生命周期管理（启动/强行停止/清除数据）等。
+ */
+class PrivilegeManager(
+    private val context: Context,
+    private val windowManager: WindowManager,
+    private val batteryManager: BatteryManager,
+    private val packageManager: PackageManager,
+    private val usageStatsManager: UsageStatsManager? = null
+) {
 
     suspend fun getActiveHookedApps(): List<String> = withContext(Dispatchers.IO) {
         val found = mutableSetOf<String>()
@@ -53,20 +62,21 @@ object PrivilegeManager {
         )
     }
 
-    suspend fun getDeviceInfo(context: Context): DeviceInfo = withContext(Dispatchers.IO) {
-        val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    suspend fun getDeviceInfo(
+        ctx: Context = context,
+        wm: WindowManager = windowManager,
+        bm: BatteryManager = batteryManager
+    ): DeviceInfo = withContext(Dispatchers.IO) {
         val metrics = DisplayMetrics()
         @Suppress("DEPRECATION")
         wm.defaultDisplay.getRealMetrics(metrics)
 
-        val bm = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
         val batteryPct = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        val isCharging = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        val isCharging =
             bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS) == BatteryManager.BATTERY_STATUS_CHARGING
-        } else false
 
-        val orientation = if (context.resources.configuration.orientation == 1) "PORTRAIT" else "LANDSCAPE"
-        val (currentPkg, currentAct) = getForegroundApp(context)
+        val orientation = if (ctx.resources.configuration.orientation == 1) "PORTRAIT" else "LANDSCAPE"
+        val (currentPkg, currentAct) = getForegroundApp(ctx)
 
         DeviceInfo(
             brand = Build.BRAND,
@@ -86,7 +96,7 @@ object PrivilegeManager {
         )
     }
 
-    suspend fun getForegroundApp(context: Context): Pair<String?, String?> = withContext(Dispatchers.IO) {
+    suspend fun getForegroundApp(ctx: Context = context): Pair<String?, String?> = withContext(Dispatchers.IO) {
         // Try via Shizuku/Root dumpsys window
         if (ShizukuBridge.hasPermission() || RootBridge.isRootAvailable()) {
             val (code, out) = if (ShizukuBridge.hasPermission()) {
@@ -109,9 +119,9 @@ object PrivilegeManager {
             }
         }
 
-        // Fallback via UsageStatsManager
+        // Fallback via injected UsageStatsManager
         try {
-            val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager
+            val usm = usageStatsManager ?: (ctx.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager)
             val time = System.currentTimeMillis()
             val stats = usm?.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, time - 1000 * 60, time)
             val topApp = stats?.maxByOrNull { it.lastTimeUsed }?.packageName
@@ -125,7 +135,7 @@ object PrivilegeManager {
     }
 
     suspend fun launchApp(
-        context: Context,
+        ctx: Context = context,
         packageName: String,
         activityName: String? = null,
         uri: String? = null
@@ -149,15 +159,15 @@ object PrivilegeManager {
                 return@withContext (code == 0) to out
             }
 
-            // Normal context launch
+            // Normal context launch via injected PackageManager
             val intent = if (uri != null) {
                 Intent(Intent.ACTION_VIEW, uri.toUri()).apply { setPackage(packageName) }
             } else {
-                context.packageManager.getLaunchIntentForPackage(packageName)
+                packageManager.getLaunchIntentForPackage(packageName)
             }
             if (intent != null) {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                context.startActivity(intent)
+                ctx.startActivity(intent)
                 true to "Launched $packageName"
             } else {
                 false to "No launch intent found for $packageName"
@@ -191,8 +201,10 @@ object PrivilegeManager {
         false to "Requires Shizuku or Root to clear application data"
     }
 
-    suspend fun getInstalledApps(context: Context, includeSystem: Boolean = false): List<Map<String, String>> = withContext(Dispatchers.IO) {
-        val pm = context.packageManager
+    suspend fun getInstalledApps(
+        pm: PackageManager = packageManager,
+        includeSystem: Boolean = false
+    ): List<Map<String, String>> = withContext(Dispatchers.IO) {
         val packages = pm.getInstalledApplications(PackageManager.GET_META_DATA)
         val list = mutableListOf<Map<String, String>>()
         for (app in packages) {
@@ -211,22 +223,26 @@ object PrivilegeManager {
         list.sortedBy { it["label"]?.lowercase() }
     }
 
-    fun getLocalIpAddresses(): List<String> {
-        val ips = mutableListOf<String>()
-        try {
-            val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
-            for (intf in interfaces) {
-                val addrs = Collections.list(intf.inetAddresses)
-                for (addr in addrs) {
-                    if (!addr.isLoopbackAddress) {
-                        val sAddr = addr.hostAddress ?: continue
-                        val isIPv4 = sAddr.indexOf(':') < 0
-                        if (isIPv4) ips.add(sAddr)
+    fun getLocalIpAddresses(): List<String> = Companion.getLocalIpAddresses()
+
+    companion object {
+        fun getLocalIpAddresses(): List<String> {
+            val ips = mutableListOf<String>()
+            try {
+                val interfaces = Collections.list(NetworkInterface.getNetworkInterfaces())
+                for (intf in interfaces) {
+                    val addrs = Collections.list(intf.inetAddresses)
+                    for (addr in addrs) {
+                        if (!addr.isLoopbackAddress) {
+                            val sAddr = addr.hostAddress ?: continue
+                            val isIPv4 = sAddr.indexOf(':') < 0
+                            if (isIPv4) ips.add(sAddr)
+                        }
                     }
                 }
+            } catch (_: Throwable) {
             }
-        } catch (_: Throwable) {
+            return ips
         }
-        return ips
     }
 }

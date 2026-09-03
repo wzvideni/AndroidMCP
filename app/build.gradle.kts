@@ -170,6 +170,10 @@ dependencies {
     implementation(libs.hiddenapibypass)
     implementation(libs.libsu.core)
 
+    // Dependency Injection (Koin)
+    implementation(libs.koin.android)
+    implementation(libs.koin.compose)
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.espresso.core)

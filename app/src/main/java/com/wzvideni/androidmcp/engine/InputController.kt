@@ -1,7 +1,6 @@
 package com.wzvideni.androidmcp.engine
 
 import android.accessibilityservice.AccessibilityService
-import android.util.Log
 import android.view.KeyEvent
 import com.wzvideni.androidmcp.hook.HookClientManager
 import com.wzvideni.androidmcp.model.HookIpcRequest

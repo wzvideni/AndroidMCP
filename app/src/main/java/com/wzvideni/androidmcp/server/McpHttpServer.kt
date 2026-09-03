@@ -4,42 +4,58 @@ import android.content.Context
 import android.util.Log
 import com.wzvideni.androidmcp.engine.PrivilegeManager
 import com.wzvideni.androidmcp.mcp.McpProtocolHandler
-import com.wzvideni.androidmcp.model.*
+import com.wzvideni.androidmcp.model.DeviceInfo
+import com.wzvideni.androidmcp.model.JsonRpcError
+import com.wzvideni.androidmcp.model.JsonRpcRequest
+import com.wzvideni.androidmcp.model.JsonRpcResponse
+import com.wzvideni.androidmcp.model.PrivilegeStatus
+import com.wzvideni.androidmcp.model.jsonConfig
 import com.wzvideni.androidmcp.vision.ScreenCapturer
 import com.wzvideni.androidmcp.vision.SetOfMarkAnnotator
 import com.wzvideni.androidmcp.vision.UiTreeFlattener
-import io.ktor.http.*
-import io.ktor.serialization.kotlinx.json.*
-import io.ktor.server.application.*
-import io.ktor.server.cio.*
-import io.ktor.server.engine.*
-import io.ktor.server.plugins.contentnegotiation.*
-import io.ktor.server.plugins.cors.routing.*
-import io.ktor.server.request.*
-import io.ktor.server.response.*
-import io.ktor.server.routing.*
-import io.ktor.server.sse.*
-import io.ktor.sse.*
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpMethod
+import io.ktor.http.HttpStatusCode
+import io.ktor.serialization.kotlinx.json.json
+import io.ktor.server.application.ApplicationCall
+import io.ktor.server.application.install
+import io.ktor.server.cio.CIO
+import io.ktor.server.engine.EmbeddedServer
+import io.ktor.server.engine.embeddedServer
+import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.server.plugins.cors.routing.CORS
+import io.ktor.server.request.receiveText
+import io.ktor.server.response.respond
+import io.ktor.server.response.respondBytes
+import io.ktor.server.response.respondText
+import io.ktor.server.routing.get
+import io.ktor.server.routing.post
+import io.ktor.server.routing.routing
+import io.ktor.server.sse.SSE
+import io.ktor.server.sse.ServerSSESession
+import io.ktor.server.sse.sse
+import io.ktor.sse.ServerSentEvent
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.launch
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import java.util.UUID
 
 class McpHttpServer(
     private val context: Context,
-    val port: Int = 8080
+    val port: Int = 8080,
+    /**
+     * 由外部（Koin DI）注入的 MCP 协议处理器。
+     */
+    val handler: McpProtocolHandler,
+    val privilegeManager: PrivilegeManager = handler.privilegeManager
 ) {
     companion object {
         private const val TAG = "McpHttpServer"
     }
 
     private var server: EmbeddedServer<*, *>? = null
-    val handler = McpProtocolHandler(context)
     private val sseMessages = MutableSharedFlow<Pair<String, String>>(extraBufferCapacity = 64)
 
     fun start() {
@@ -75,8 +91,8 @@ class McpHttpServer(
 
                 // Status API
                 get("/api/status") {
-                    val status = PrivilegeManager.getPrivilegeStatus()
-                    val info = PrivilegeManager.getDeviceInfo(context)
+                    val status = privilegeManager.getPrivilegeStatus()
+                    val info = privilegeManager.getDeviceInfo(context)
                     val json = buildJsonObject {
                         put("serverPort", JsonPrimitive(port))
                         put("privileges", jsonConfig.encodeToJsonElement(PrivilegeStatus.serializer(), status))

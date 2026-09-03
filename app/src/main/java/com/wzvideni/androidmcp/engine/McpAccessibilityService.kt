@@ -2,6 +2,7 @@ package com.wzvideni.androidmcp.engine
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.annotation.SuppressLint
 import android.graphics.Bitmap
 import android.graphics.Path
 import android.graphics.Rect
@@ -19,6 +20,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicInteger
 
+@SuppressLint("AccessibilityPolicy")
 class McpAccessibilityService : AccessibilityService() {
 
     companion object {
@@ -52,14 +54,7 @@ class McpAccessibilityService : AccessibilityService() {
     fun dumpHierarchy(): UiNode? {
         val root = rootInActiveWindow ?: return null
         val idCounter = AtomicInteger(1)
-        return try {
-            traverseNode(root, idCounter)
-        } finally {
-            try {
-                root.recycle()
-            } catch (_: Throwable) {
-            }
-        }
+        return traverseNode(root, idCounter)
     }
 
     private fun traverseNode(node: AccessibilityNodeInfo, idCounter: AtomicInteger): UiNode {
@@ -70,14 +65,8 @@ class McpAccessibilityService : AccessibilityService() {
         val childrenList = mutableListOf<UiNode>()
         for (i in 0 until node.childCount) {
             val child = node.getChild(i)
-            if (child != null) {
-                if (child.isVisibleToUser) {
-                    childrenList.add(traverseNode(child, idCounter))
-                }
-                try {
-                    child.recycle()
-                } catch (_: Throwable) {
-                }
+            if (child != null && child.isVisibleToUser) {
+                childrenList.add(traverseNode(child, idCounter))
             }
         }
 
@@ -155,18 +144,11 @@ class McpAccessibilityService : AccessibilityService() {
         val arguments = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
         }
-        val success = focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
-        try {
-            focused.recycle()
-            root.recycle()
-        } catch (_: Throwable) {
-        }
-        return success
+        return focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments)
     }
 
     @RequiresApi(Build.VERSION_CODES.R)
     suspend fun takeScreenshotA11y(): Bitmap? = withContext(Dispatchers.Main) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return@withContext null
         val deferred = CompletableDeferred<Bitmap?>()
         takeScreenshot(
             Display.DEFAULT_DISPLAY,

@@ -23,7 +23,11 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 
-class McpProtocolHandler(private val context: Context) {
+class McpProtocolHandler(
+    val context: Context,
+    val privilegeManager: PrivilegeManager,
+    val clipboardManager: ClipboardManager
+) {
 
     companion object {
         private const val TAG = "McpProtocolHandler"
@@ -435,7 +439,7 @@ class McpProtocolHandler(private val context: Context) {
     }
 
     suspend fun dumpUiTree(): Pair<UiNode?, String> {
-        val (currentPkg, _) = PrivilegeManager.getForegroundApp(context)
+        val (currentPkg, _) = privilegeManager.getForegroundApp(context)
         var tree: UiNode? = null
         var source = "unknown"
 
@@ -474,7 +478,7 @@ class McpProtocolHandler(private val context: Context) {
         return when (name) {
             "get_ui_hierarchy" -> {
                 val format = args["format"]?.jsonPrimitive?.content ?: "compact_text"
-                val (currentPkg, currentAct) = PrivilegeManager.getForegroundApp(context)
+                val (currentPkg, currentAct) = privilegeManager.getForegroundApp(context)
                 val (tree, source) = dumpUiTree()
 
                 if (tree == null) {
@@ -582,19 +586,19 @@ class McpProtocolHandler(private val context: Context) {
                 val act = args["activity_name"]?.jsonPrimitive?.contentOrNull
                 val uri = args["uri"]?.jsonPrimitive?.contentOrNull
 
-                val (ok, msg) = PrivilegeManager.launchApp(context, pkg, act, uri)
+                val (ok, msg) = privilegeManager.launchApp(context, pkg, act, uri)
                 CallToolResult(content = listOf(ContentItem(text = msg)), isError = !ok)
             }
 
             "stop_app" -> {
                 val pkg = args["package_name"]?.jsonPrimitive?.content ?: ""
-                val (ok, msg) = PrivilegeManager.stopApp(pkg)
+                val (ok, msg) = privilegeManager.stopApp(pkg)
                 CallToolResult(content = listOf(ContentItem(text = msg)), isError = !ok)
             }
 
             "clear_app_data" -> {
                 val pkg = args["package_name"]?.jsonPrimitive?.content ?: ""
-                val (ok, msg) = PrivilegeManager.clearAppData(pkg)
+                val (ok, msg) = privilegeManager.clearAppData(pkg)
                 CallToolResult(content = listOf(ContentItem(text = msg)), isError = !ok)
             }
 
@@ -626,8 +630,8 @@ class McpProtocolHandler(private val context: Context) {
             }
 
             "get_device_info" -> {
-                val info = PrivilegeManager.getDeviceInfo(context)
-                val status = PrivilegeManager.getPrivilegeStatus()
+                val info = privilegeManager.getDeviceInfo(context)
+                val status = privilegeManager.getPrivilegeStatus()
                 val json = buildJsonObject {
                     put("device", jsonConfig.encodeToJsonElement(info))
                     put("privileges", jsonConfig.encodeToJsonElement(status))
@@ -659,7 +663,7 @@ class McpProtocolHandler(private val context: Context) {
                 var pkg = args["package_name"]?.jsonPrimitive?.contentOrNull
                 val cls = args["class_name"]?.jsonPrimitive?.contentOrNull
                 if (pkg.isNullOrBlank()) {
-                    val (fgPkg, _) = PrivilegeManager.getForegroundApp(context)
+                    val (fgPkg, _) = privilegeManager.getForegroundApp(context)
                     pkg = fgPkg
                 }
                 if (pkg.isNullOrBlank()) {
@@ -849,8 +853,7 @@ class McpProtocolHandler(private val context: Context) {
                         var clipText: String? = null
                         withContext(Dispatchers.Main) {
                             try {
-                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
-                                clipText = cm?.primaryClip?.getItemAt(0)?.text?.toString()
+                                clipText = clipboardManager.primaryClip?.getItemAt(0)?.text?.toString()
                             } catch (_: Throwable) {
                             }
                         }
@@ -864,9 +867,8 @@ class McpProtocolHandler(private val context: Context) {
                         val newText = text ?: ""
                         withContext(Dispatchers.Main) {
                             try {
-                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
                                 val clip = ClipData.newPlainText("mcp", newText)
-                                cm?.setPrimaryClip(clip)
+                                clipboardManager.setPrimaryClip(clip)
                             } catch (_: Throwable) {
                             }
                         }
@@ -994,7 +996,7 @@ class McpProtocolHandler(private val context: Context) {
     private suspend fun readResource(uri: String): ReadResourceResult {
         return when (uri) {
             "device://info" -> {
-                val info = PrivilegeManager.getDeviceInfo(context)
+                val info = privilegeManager.getDeviceInfo(context)
                 ReadResourceResult(
                     contents = listOf(
                         ResourceContent(uri = uri, mimeType = "application/json", text = jsonConfig.encodeToString(info))
@@ -1002,7 +1004,7 @@ class McpProtocolHandler(private val context: Context) {
                 )
             }
             "device://current_app" -> {
-                val (pkg, act) = PrivilegeManager.getForegroundApp(context)
+                val (pkg, act) = privilegeManager.getForegroundApp(context)
                 val json = buildJsonObject {
                     put("package", JsonPrimitive(pkg))
                     put("activity", JsonPrimitive(act))
@@ -1014,7 +1016,7 @@ class McpProtocolHandler(private val context: Context) {
                 )
             }
             "device://installed_apps" -> {
-                val apps = PrivilegeManager.getInstalledApps(context, includeSystem = false)
+                val apps = privilegeManager.getInstalledApps(includeSystem = false)
                 ReadResourceResult(
                     contents = listOf(
                         ResourceContent(uri = uri, mimeType = "application/json", text = jsonConfig.encodeToString(apps))
@@ -1022,7 +1024,7 @@ class McpProtocolHandler(private val context: Context) {
                 )
             }
             "device://status" -> {
-                val status = PrivilegeManager.getPrivilegeStatus()
+                val status = privilegeManager.getPrivilegeStatus()
                 ReadResourceResult(
                     contents = listOf(
                         ResourceContent(uri = uri, mimeType = "application/json", text = jsonConfig.encodeToString(status))

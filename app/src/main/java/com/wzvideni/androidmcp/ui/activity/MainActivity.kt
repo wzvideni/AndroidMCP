@@ -42,9 +42,20 @@ import com.wzvideni.androidmcp.ui.theme.AndroidMCPTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.koin.android.ext.android.inject
+import org.koin.compose.koinInject
 import rikka.shizuku.Shizuku
 
 class MainActivity : ComponentActivity() {
+
+    /** 通过 Koin 注入 ShizukuBridge，替代直接引用 object（便于测试时替换 mock） */
+    private val shizukuBridge: ShizukuBridge by inject()
+
+    /** 通过 Koin 注入 RootBridge */
+    private val rootBridge: RootBridge by inject()
+
+    /** 通过 Koin 注入 PackageManager 系统服务 */
+    private val appPackageManager: PackageManager by inject()
 
     private val homeComponent by lazy {
         ComponentName(
@@ -80,8 +91,8 @@ class MainActivity : ComponentActivity() {
 
         // Asynchronous initialization on background thread
         lifecycleScope.launch(Dispatchers.IO) {
-            ShizukuBridge.initHiddenApiBypass()
-            RootBridge.checkRootAsync()
+            shizukuBridge.initHiddenApiBypass()
+            rootBridge.checkRootAsync()
         }
 
         setContent {
@@ -102,7 +113,8 @@ class MainActivity : ComponentActivity() {
                             window.decorView.postDelayed({ refreshTrigger++ }, 300)
                         },
                         isLauncherIconShowing = isLauncherIconShowing,
-                        onToggleLauncherIcon = { show -> hideOrShowLauncherIcon(show) }
+                        onToggleLauncherIcon = { show -> hideOrShowLauncherIcon(show) },
+                        onRequestShizukuPermission = { shizukuBridge.requestPermission() }
                     )
                 }
             }
@@ -126,13 +138,13 @@ class MainActivity : ComponentActivity() {
 
     private fun hideOrShowLauncherIcon(isShow: Boolean) {
         if (isShow) {
-            packageManager.setComponentEnabledSetting(
+            appPackageManager.setComponentEnabledSetting(
                 homeComponent,
                 PackageManager.COMPONENT_ENABLED_STATE_ENABLED,
                 PackageManager.DONT_KILL_APP
             )
         } else {
-            packageManager.setComponentEnabledSetting(
+            appPackageManager.setComponentEnabledSetting(
                 homeComponent,
                 PackageManager.COMPONENT_ENABLED_STATE_DISABLED,
                 PackageManager.DONT_KILL_APP
@@ -142,7 +154,7 @@ class MainActivity : ComponentActivity() {
 
     private val isLauncherIconShowing: Boolean
         get() = try {
-            packageManager.getComponentEnabledSetting(homeComponent) != PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+            appPackageManager.getComponentEnabledSetting(homeComponent) != PackageManager.COMPONENT_ENABLED_STATE_DISABLED
         } catch (_: Throwable) {
             true
         }
@@ -155,27 +167,35 @@ fun McpDashboardScreen(
     onRefresh: () -> Unit,
     onToggleServer: (Boolean) -> Unit,
     isLauncherIconShowing: Boolean,
-    onToggleLauncherIcon: (Boolean) -> Unit
+    onToggleLauncherIcon: (Boolean) -> Unit,
+    /** Shizuku 授权请求回调，由 Activity 传入（内部调用 ShizukuBridge.requestPermission()） */
+    onRequestShizukuPermission: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val isServerRunning = McpForegroundService.isRunning
+
+    // 通过 Koin 在 Composable 内获取各组件及系统 Manager 引用
+    val shizukuBridge: ShizukuBridge = koinInject()
+    val rootBridge: RootBridge = koinInject()
+    val privilegeManager: PrivilegeManager = koinInject()
+    val clipboardManager: ClipboardManager = koinInject()
 
     // State loaded fully asynchronously to prevent any main thread blocking
     var isLsposedActive by remember { mutableStateOf(false) }
     var isShizukuRunning by remember { mutableStateOf(false) }
     var isShizukuActive by remember { mutableStateOf(false) }
-    var isRootActive by remember { mutableStateOf(RootBridge.isRootCached()) }
+    var isRootActive by remember { mutableStateOf(rootBridge.isRootCached()) }
     var isA11yActive by remember { mutableStateOf(McpAccessibilityService.isRunning) }
     var localIps by remember { mutableStateOf<List<String>>(emptyList()) }
 
     LaunchedEffect(refreshKey) {
         withContext(Dispatchers.IO) {
             val lsp = try { YukiHookAPI.Status.isXposedModuleActive } catch (_: Throwable) { false }
-            val shizukuRun = ShizukuBridge.isRunning()
-            val shizukuPerm = if (shizukuRun) ShizukuBridge.hasPermission() else false
-            val root = RootBridge.checkRootAsync()
+            val shizukuRun = shizukuBridge.isRunning()
+            val shizukuPerm = if (shizukuRun) shizukuBridge.hasPermission() else false
+            val root = rootBridge.checkRootAsync()
             val a11y = McpAccessibilityService.isRunning
-            val ips = PrivilegeManager.getLocalIpAddresses()
+            val ips = privilegeManager.getLocalIpAddresses()
 
             withContext(Dispatchers.Main) {
                 isLsposedActive = lsp
@@ -187,6 +207,7 @@ fun McpDashboardScreen(
             }
         }
     }
+
 
     val primaryLanIp = localIps.firstOrNull() ?: "127.0.0.1"
     val scrollState = rememberScrollState()
@@ -292,9 +313,8 @@ fun McpDashboardScreen(
                         ) {
                             OutlinedButton(
                                 onClick = {
-                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                                     val lanUrl = "http://$primaryLanIp:8080/mcp/v1/sse"
-                                    cm.setPrimaryClip(ClipData.newPlainText("lan_sse", lanUrl))
+                                    clipboardManager.setPrimaryClip(ClipData.newPlainText("lan_sse", lanUrl))
                                     Toast.makeText(context, "已复制局域网地址：$lanUrl", Toast.LENGTH_SHORT).show()
                                 },
                                 modifier = Modifier.weight(1f)
@@ -309,8 +329,7 @@ fun McpDashboardScreen(
                             }
                             OutlinedButton(
                                 onClick = {
-                                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    cm.setPrimaryClip(
+                                    clipboardManager.setPrimaryClip(
                                         ClipData.newPlainText(
                                             "adb",
                                             "adb forward tcp:8080 tcp:8080"
@@ -388,7 +407,7 @@ fun McpDashboardScreen(
                         desc = if (isShizukuActive) "已授权：支持毫秒级触控注入与应用生命周期管控" else if (isShizukuRunning) "运行中 (点击右侧按钮申请授权)" else "未运行 (请在 Shizuku 应用中启动服务)",
                         isActive = isShizukuActive,
                         actionLabel = if (!isShizukuActive && isShizukuRunning) "授权" else null,
-                        onAction = { ShizukuBridge.requestPermission() }
+                        onAction = { onRequestShizukuPermission() }
                     )
 
                     HorizontalDivider(

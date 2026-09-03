@@ -23,11 +23,38 @@ object ViewTreeExtractor {
             packageName = activity.packageName
         )
         val idCounter = AtomicInteger(1)
-        return extractViewNode(activity, decorView, idCounter)
+        return extractViewNode(activity.packageName, decorView, idCounter)
+    }
+
+    fun extractFromProcess(packageName: String): UiNode {
+        val idCounter = AtomicInteger(1)
+        val rootChildren = mutableListOf<UiNode>()
+        try {
+            val wmgClass = Class.forName("android.view.WindowManagerGlobal")
+            val getInstanceMethod = wmgClass.getMethod("getInstance")
+            val wmg = getInstanceMethod.invoke(null)
+            val mViewsField = wmgClass.getDeclaredField("mViews")
+            mViewsField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            val views = (mViewsField.get(wmg) as? ArrayList<View>) ?: emptyList()
+            for (v in views) {
+                if (v.visibility == View.VISIBLE) {
+                    rootChildren.add(extractViewNode(packageName, v, idCounter))
+                }
+            }
+        } catch (_: Throwable) {
+        }
+
+        return UiNode(
+            id = 0,
+            className = "ProcessWindowRoot",
+            packageName = packageName,
+            children = rootChildren
+        )
     }
 
     private fun extractViewNode(
-        activity: Activity,
+        packageName: String,
         view: View,
         idCounter: AtomicInteger
     ): UiNode {
@@ -37,7 +64,7 @@ object ViewTreeExtractor {
 
         val resIdName: String? = if (view.id != View.NO_ID && view.id > 0) {
             try {
-                activity.resources.getResourceName(view.id)
+                view.resources.getResourceName(view.id)
             } catch (_: Throwable) {
                 view.id.toString()
             }
@@ -74,7 +101,7 @@ object ViewTreeExtractor {
             for (i in 0 until view.childCount) {
                 val child = view.getChildAt(i)
                 if (child != null && child.visibility == View.VISIBLE) {
-                    children.add(extractViewNode(activity, child, idCounter))
+                    children.add(extractViewNode(packageName, child, idCounter))
                 }
             }
         }
@@ -85,7 +112,7 @@ object ViewTreeExtractor {
             description = desc,
             resourceId = resIdName,
             className = className,
-            packageName = activity.packageName,
+            packageName = packageName,
             bounds = bounds,
             clickable = view.isClickable,
             scrollable = view.isScrollContainer || view.canScrollVertically(1) || view.canScrollVertically(-1),

@@ -17,14 +17,34 @@ import com.wzvideni.androidmcp.model.PrivilegeStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.NetworkInterface
+import com.wzvideni.androidmcp.hook.HookClientManager
 import java.util.Collections
 
 object PrivilegeManager {
 
-    fun getPrivilegeStatus(): PrivilegeStatus {
-        return PrivilegeStatus(
-            lsposedActive = YukiHookAPI.Status.isXposedModuleActive,
-            hookedAppsCount = if (YukiHookAPI.Status.isXposedModuleActive) 1 else 0,
+    suspend fun getActiveHookedApps(): List<String> = withContext(Dispatchers.IO) {
+        val found = mutableSetOf<String>()
+        if (RootBridge.isRootAvailable()) {
+            val (_, out) = RootBridge.exec("cat /proc/net/unix 2>/dev/null | grep androidmcp_hook_")
+            Regex("androidmcp_hook_([a-zA-Z0-9_.]+)").findAll(out).forEach {
+                found.add(it.groupValues[1])
+            }
+        }
+        val candidateScopes = listOf("android", "com.android.systemui")
+        for (pkg in candidateScopes) {
+            if (!found.contains(pkg) && HookClientManager.isAppHookedAndActive(pkg)) {
+                found.add(pkg)
+            }
+        }
+        found.toList()
+    }
+
+    suspend fun getPrivilegeStatus(): PrivilegeStatus = withContext(Dispatchers.IO) {
+        val hookedApps = getActiveHookedApps()
+        PrivilegeStatus(
+            lsposedActive = YukiHookAPI.Status.isXposedModuleActive || hookedApps.isNotEmpty(),
+            hookedAppsCount = if (hookedApps.isNotEmpty()) hookedApps.size else (if (YukiHookAPI.Status.isXposedModuleActive) 1 else 0),
+            hookedApps = hookedApps,
             shizukuRunning = ShizukuBridge.isRunning(),
             shizukuAuthorized = ShizukuBridge.hasPermission(),
             rootAvailable = RootBridge.isRootAvailable(),

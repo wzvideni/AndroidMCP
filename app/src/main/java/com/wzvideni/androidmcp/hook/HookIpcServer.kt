@@ -15,21 +15,32 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.io.PrintWriter
 import java.lang.ref.WeakReference
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Runs inside the hooked target application process.
- * Listens for commands from AndroidMCP via LocalServerSocket.
+ * Listens for commands from AndroidMCP via Loopback TCP (127.0.0.1) and LocalServerSocket.
  */
 object HookIpcServer {
 
     private const val TAG = "HookIpcServer"
+    private const val BASE_PORT = 19500
     private var isRunning = AtomicBoolean(false)
-    private var serverSocket: LocalServerSocket? = null
+    private var tcpServerSocket: ServerSocket? = null
+    private var localServerSocket: LocalServerSocket? = null
     private var currentActivityRef: WeakReference<Activity>? = null
     private var packageName: String = ""
+
+    fun getPortForPackage(pkg: String): Int {
+        val hash = (pkg.hashCode().toLong() and 0x7FFFFFFF) % 1000
+        return BASE_PORT + hash.toInt()
+    }
 
     fun updateCurrentActivity(activity: Activity) {
         currentActivityRef = WeakReference(activity)
@@ -53,26 +64,47 @@ object HookIpcServer {
     }
 
     private fun startServerLoop(pkgName: String) {
+        val port = getPortForPackage(pkgName)
         val socketName = "androidmcp_hook_$pkgName"
-        try {
-            serverSocket = LocalServerSocket(socketName)
-            Log.i(TAG, "Hook IPC server started on abstract socket: $socketName")
 
-            while (isRunning.get()) {
-                val clientSocket = serverSocket?.accept() ?: break
-                handleClient(clientSocket)
+        // 1. Loopback TCP Listener (Completely bypasses SELinux cross-domain socket restrictions)
+        try {
+            tcpServerSocket = ServerSocket(port, 50, InetAddress.getByName("127.0.0.1"))
+            Log.i(TAG, "Hook IPC TCP server started on 127.0.0.1:$port for $pkgName")
+            CoroutineScope(Dispatchers.IO).launch {
+                while (isRunning.get()) {
+                    try {
+                        val client = tcpServerSocket?.accept() ?: break
+                        handleTcpClient(client)
+                    } catch (_: Throwable) {
+                        break
+                    }
+                }
             }
         } catch (e: Throwable) {
-            Log.e(TAG, "Hook IPC Server error on $socketName: ${e.message}")
-            isRunning.set(false)
+            Log.e(TAG, "Failed to bind TCP port $port for $pkgName: ${e.message}")
+        }
+
+        // 2. Abstract LocalServerSocket Listener
+        try {
+            localServerSocket = LocalServerSocket(socketName)
+            Log.i(TAG, "Hook IPC LocalServerSocket started on abstract: $socketName")
+
+            while (isRunning.get()) {
+                val clientSocket = localServerSocket?.accept() ?: break
+                handleLocalClient(clientSocket)
+            }
+        } catch (e: Throwable) {
+            Log.e(TAG, "Hook IPC LocalServerSocket error on $socketName: ${e.message}")
         }
     }
 
-    private fun handleClient(socket: LocalSocket) {
+    private fun handleTcpClient(socket: Socket) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val reader = BufferedReader(InputStreamReader(socket.inputStream))
-                val writer = PrintWriter(socket.outputStream, true)
+                socket.soTimeout = 3000
+                val reader = BufferedReader(InputStreamReader(socket.getInputStream(), Charsets.UTF_8))
+                val writer = PrintWriter(OutputStreamWriter(socket.getOutputStream(), Charsets.UTF_8), true)
 
                 val line = reader.readLine()
                 if (line != null) {
@@ -82,7 +114,31 @@ object HookIpcServer {
                     writer.println(jsonResp)
                 }
             } catch (e: Throwable) {
-                Log.e(TAG, "Error handling client connection: ${e.message}")
+                Log.e(TAG, "Error handling TCP client connection: ${e.message}")
+            } finally {
+                try {
+                    socket.close()
+                } catch (_: Throwable) {
+                }
+            }
+        }
+    }
+
+    private fun handleLocalClient(socket: LocalSocket) {
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val reader = BufferedReader(InputStreamReader(socket.inputStream, Charsets.UTF_8))
+                val writer = PrintWriter(OutputStreamWriter(socket.outputStream, Charsets.UTF_8), true)
+
+                val line = reader.readLine()
+                if (line != null) {
+                    val request = jsonConfig.decodeFromString<HookIpcRequest>(line)
+                    val response = processRequest(request)
+                    val jsonResp = jsonConfig.encodeToString(response)
+                    writer.println(jsonResp)
+                }
+            } catch (e: Throwable) {
+                Log.e(TAG, "Error handling LocalSocket client connection: ${e.message}")
             } finally {
                 try {
                     socket.close()
@@ -104,7 +160,16 @@ object HookIpcServer {
             }
             "GET_ACTIVITY_INFO" -> {
                 if (currentActivity == null) {
-                    HookIpcResponse(success = false, message = "No active Activity in process $packageName")
+                    val jsonObj = buildJsonObject {
+                        put("process", JsonPrimitive(packageName))
+                        put("type", JsonPrimitive("Service/Framework Process"))
+                        put("hasActivity", JsonPrimitive(false))
+                    }
+                    HookIpcResponse(
+                        success = true,
+                        message = "Process $packageName is active (Service/Framework Mode, no foreground Activity)",
+                        data = jsonObj
+                    )
                 } else {
                     val info = MethodInvoker.inspectObject(currentActivity)
                     val jsonObj = buildJsonObject {
@@ -118,16 +183,16 @@ object HookIpcServer {
                 }
             }
             "GET_VIEW_TREE" -> {
-                if (currentActivity == null) {
-                    HookIpcResponse(success = false, message = "No active Activity in process $packageName")
+                val tree = if (currentActivity != null) {
+                    ViewTreeExtractor.extractFromActivity(currentActivity)
                 } else {
-                    val tree = ViewTreeExtractor.extractFromActivity(currentActivity)
-                    HookIpcResponse(
-                        success = true,
-                        message = "View tree extracted from ${currentActivity.javaClass.name}",
-                        uiNode = tree
-                    )
+                    ViewTreeExtractor.extractFromProcess(packageName)
                 }
+                HookIpcResponse(
+                    success = true,
+                    message = "View tree extracted from $packageName (${if (currentActivity != null) currentActivity.javaClass.name else "Process Windows"})",
+                    uiNode = tree
+                )
             }
             "CLICK_VIEW" -> {
                 if (currentActivity == null) {

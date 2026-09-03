@@ -17,6 +17,16 @@ object ScreenCapturer {
     private const val TAG = "ScreenCapturer"
 
     suspend fun captureBitmap(): Bitmap? = withContext(Dispatchers.IO) {
+        // Wake up screen if in sleep/ambient state
+        try {
+            if (RootBridge.isRootAvailable()) {
+                RootBridge.exec("input keyevent 224")
+            } else if (ShizukuBridge.hasPermission()) {
+                ShizukuBridge.exec("input", "keyevent", "224")
+            }
+        } catch (_: Throwable) {
+        }
+
         // 1. Try Root screencap
         if (RootBridge.isRootAvailable()) {
             val raw = RootBridge.takeScreenshotRaw()

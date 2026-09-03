@@ -27,6 +27,9 @@ class HookEntry : IYukiHookXposedInit {
             // Avoid hooking our own module process unnecessarily
             if (packageName == BuildConfig.APPLICATION_ID) return@loadApp
 
+            // Start Hook IPC server immediately for this hooked app process (even if no Activity)
+            HookIpcServer.ensureServerStarted(packageName)
+
             // Hook Activity lifecycle to capture current active Activity and start IPC server
             Activity::class.java.hook {
                 injectMember {

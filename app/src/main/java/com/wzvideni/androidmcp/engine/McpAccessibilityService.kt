@@ -52,7 +52,10 @@ class McpAccessibilityService : AccessibilityService() {
     }
 
     fun dumpHierarchy(): UiNode? {
-        val root = rootInActiveWindow ?: return null
+        val root = rootInActiveWindow
+            ?: windows.firstOrNull { it.isActive }?.root
+            ?: windows.firstOrNull()?.root
+            ?: return null
         val idCounter = AtomicInteger(1)
         return traverseNode(root, idCounter)
     }

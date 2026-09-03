@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">AndroidMCP</string>
-    <string name="xposed_desc">AndroidMCP</string>
+    <string name="xposed_desc">原生运行于 Android 系统的特权级 Model Context Protocol (MCP) 服务端，支持 LSPosed 内存反射、View 树逆向与系统级全自动化交互。</string>
     <string name="about_module">此模块使用 YukiHookAPI 构建。\n了解更多 https://github.com/HighCapable/YuKiHookAPI</string>
     <string name="about_module_extension">此模块使用 KavaRef 强力驱动。\n了解更多 https://github.com/HighCapable/KavaRef</string>
     <string name="module_version">模块版本：%1$s</string>

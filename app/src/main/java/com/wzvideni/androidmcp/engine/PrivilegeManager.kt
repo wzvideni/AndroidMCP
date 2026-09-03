@@ -34,7 +34,7 @@ class PrivilegeManager(
 
     suspend fun getActiveHookedApps(): List<String> = withContext(Dispatchers.IO) {
         val found = mutableSetOf<String>()
-        if (RootBridge.isRootAvailable()) {
+        if (RootBridge.checkRootAsync()) {
             val (_, out) = RootBridge.exec("cat /proc/net/unix 2>/dev/null | grep androidmcp_hook_")
             Regex("androidmcp_hook_([a-zA-Z0-9_.]+)").findAll(out).forEach {
                 found.add(it.groupValues[1])
@@ -57,7 +57,7 @@ class PrivilegeManager(
             hookedApps = hookedApps,
             shizukuRunning = ShizukuBridge.isRunning(),
             shizukuAuthorized = ShizukuBridge.hasPermission(),
-            rootAvailable = RootBridge.isRootAvailable(),
+            rootAvailable = RootBridge.checkRootAsync(),
             accessibilityActive = McpAccessibilityService.isRunning
         )
     }

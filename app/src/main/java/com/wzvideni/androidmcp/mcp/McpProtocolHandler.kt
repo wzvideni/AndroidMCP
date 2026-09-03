@@ -851,8 +851,13 @@ class McpProtocolHandler(
                     val dbPath = "$dbDir/$dbName"
                     val safeQuery = if (query.trim().uppercase().startsWith("SELECT") && !query.uppercase().contains("LIMIT")) "$query LIMIT $limit;" else query
                     val (code, out) = RootBridge.exec("sqlite3 -json $dbPath \"$safeQuery\" 2>/dev/null || sqlite3 -header -column $dbPath \"$safeQuery\" 2>/dev/null")
+                    val resultText = if (code != 0 || out.isBlank()) {
+                        querySqliteViaFramework(dbPath, query, limit)
+                    } else {
+                        out
+                    }
                     CallToolResult(
-                        content = listOf(ContentItem(text = out.ifBlank { "Query executed (exitCode=$code, empty output)" }))
+                        content = listOf(ContentItem(text = resultText))
                     )
                 }
             }
@@ -1114,9 +1119,9 @@ class McpProtocolHandler(
     private suspend fun dumpViaUiAutomator(): UiNode? = withContext(Dispatchers.IO) {
         val tmpFile = "/data/local/tmp/mcp_uidump.xml"
         val (code, _) = if (RootBridge.isRootAvailable()) {
-            RootBridge.exec("uiautomator dump $tmpFile")
+            RootBridge.exec("rm -f $tmpFile && uiautomator dump $tmpFile")
         } else if (ShizukuBridge.hasPermission()) {
-            ShizukuBridge.exec("uiautomator", "dump", tmpFile)
+            ShizukuBridge.exec("sh", "-c", "rm -f $tmpFile && uiautomator dump $tmpFile")
         } else {
             return@withContext null
         }
@@ -1124,10 +1129,11 @@ class McpProtocolHandler(
         if (code != 0) return@withContext null
 
         val xmlContent = if (RootBridge.isRootAvailable()) {
-            val (readCode, out) = RootBridge.exec("cat $tmpFile")
+            val (readCode, out) = RootBridge.exec("cat $tmpFile && rm -f $tmpFile")
             if (readCode == 0) out else null
         } else {
             val (readCode, out) = ShizukuBridge.exec("cat", tmpFile)
+            ShizukuBridge.exec("rm", "-f", tmpFile)
             if (readCode == 0) out else null
         } ?: return@withContext null
 
@@ -1313,4 +1319,57 @@ class McpProtocolHandler(
             xml
         }
     }
+
+    private suspend fun querySqliteViaFramework(dbPath: String, query: String, limit: Int): String = withContext(Dispatchers.IO) {
+        val tempFile = File(context.cacheDir, "mcp_query_${System.currentTimeMillis()}.db")
+        try {
+            val (copyCode, _) = RootBridge.exec("cp \"$dbPath\" \"${tempFile.absolutePath}\" && chmod 666 \"${tempFile.absolutePath}\"")
+            if (copyCode != 0 || !tempFile.exists()) {
+                return@withContext "Failed to copy database for inspection"
+            }
+            val db = android.database.sqlite.SQLiteDatabase.openDatabase(
+                tempFile.absolutePath,
+                null,
+                android.database.sqlite.SQLiteDatabase.OPEN_READONLY
+            )
+            db.use { database ->
+                val safeQuery = if (query.trim().uppercase().startsWith("SELECT") && !query.uppercase().contains("LIMIT")) "$query LIMIT $limit" else query
+                val cursor = database.rawQuery(safeQuery, null)
+                cursor.use { c ->
+                    val colNames = c.columnNames
+                    val rows = mutableListOf<Map<String, String?>>()
+                    while (c.moveToNext()) {
+                        val row = mutableMapOf<String, String?>()
+                        for (i in colNames.indices) {
+                            row[colNames[i]] = when (c.getType(i)) {
+                                android.database.Cursor.FIELD_TYPE_NULL -> null
+                                android.database.Cursor.FIELD_TYPE_INTEGER -> c.getLong(i).toString()
+                                android.database.Cursor.FIELD_TYPE_FLOAT -> c.getDouble(i).toString()
+                                android.database.Cursor.FIELD_TYPE_STRING -> c.getString(i)
+                                android.database.Cursor.FIELD_TYPE_BLOB -> "[BLOB ${c.getBlob(i)?.size ?: 0} bytes]"
+                                else -> c.getString(i)
+                            }
+                        }
+                        rows.add(row)
+                    }
+                    val jsonArray = buildJsonArray {
+                        rows.forEach { rowMap ->
+                            add(buildJsonObject {
+                                rowMap.forEach { (col, valStr) ->
+                                    if (valStr == null) put(col, kotlinx.serialization.json.JsonNull)
+                                    else put(col, JsonPrimitive(valStr))
+                                }
+                            })
+                        }
+                    }
+                    jsonConfig.encodeToString(jsonArray)
+                }
+            }
+        } catch (e: Throwable) {
+            "SQLite query error: ${e.message}"
+        } finally {
+            try { tempFile.delete() } catch (_: Throwable) {}
+        }
+    }
 }
+

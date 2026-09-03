@@ -14,6 +14,14 @@ object RootBridge {
     @Volatile
     private var isRootGranted = false
 
+    init {
+        Shell.setDefaultBuilder(
+            Shell.Builder.create()
+                .setFlags(Shell.FLAG_MOUNT_MASTER)
+                .setTimeout(10)
+        )
+    }
+
     fun isRootCached(): Boolean = isRootGranted
 
     fun hasSuBinary(): Boolean {
@@ -42,12 +50,18 @@ object RootBridge {
     }
 
     fun isRootAvailable(): Boolean {
-        if (!isRootChecked || !isRootGranted) {
+        if (!isRootChecked) {
             if (!hasSuBinary()) {
                 isRootGranted = false
                 isRootChecked = true
                 return false
             }
+            isRootGranted = try {
+                Shell.isAppGrantedRoot() == true || Shell.getShell().isRoot
+            } catch (_: Throwable) {
+                false
+            }
+            isRootChecked = true
         }
         return isRootGranted
     }

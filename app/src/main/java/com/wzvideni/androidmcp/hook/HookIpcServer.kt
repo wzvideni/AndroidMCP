@@ -159,7 +159,20 @@ object HookIpcServer {
                 )
             }
             "GET_ACTIVITY_INFO" -> {
-                if (currentActivity == null) {
+                val targetObj: Any? = if (!request.className.isNullOrBlank()) {
+                    val clazz = MethodInvoker.loadClass(request.className, currentActivity?.classLoader)
+                        ?: return HookIpcResponse(success = false, message = "Class not found: ${request.className}")
+                    MethodInvoker.resolveInstance(clazz, currentActivity)
+                } else {
+                    currentActivity ?: try {
+                        val atClass = Class.forName("android.app.ActivityThread")
+                        atClass.getMethod("currentApplication").invoke(null)
+                    } catch (_: Throwable) {
+                        null
+                    }
+                }
+
+                if (targetObj == null) {
                     val jsonObj = buildJsonObject {
                         put("process", JsonPrimitive(packageName))
                         put("type", JsonPrimitive("Service/Framework Process"))
@@ -171,13 +184,13 @@ object HookIpcServer {
                         data = jsonObj
                     )
                 } else {
-                    val info = MethodInvoker.inspectObject(currentActivity)
+                    val info = MethodInvoker.inspectObject(targetObj)
                     val jsonObj = buildJsonObject {
                         info.forEach { (k, v) -> put(k, JsonPrimitive(v)) }
                     }
                     HookIpcResponse(
                         success = true,
-                        message = "Activity: ${currentActivity.javaClass.name}",
+                        message = "Target: ${targetObj.javaClass.name}",
                         data = jsonObj
                     )
                 }
@@ -214,11 +227,9 @@ object HookIpcServer {
                     HookIpcResponse(success = false, message = "No active Activity and no ClassName specified")
                 } else {
                     val target: Any = if (!request.className.isNullOrBlank()) {
-                        try {
-                            Class.forName(request.className)
-                        } catch (e: Throwable) {
-                            return HookIpcResponse(success = false, message = "Class not found: ${e.message}")
-                        }
+                        val clazz = MethodInvoker.loadClass(request.className, currentActivity?.classLoader)
+                            ?: return HookIpcResponse(success = false, message = "Class not found: ${request.className}")
+                        clazz
                     } else {
                         currentActivity!!
                     }
@@ -239,11 +250,9 @@ object HookIpcServer {
                     HookIpcResponse(success = false, message = "No active Activity and no ClassName specified")
                 } else {
                     val target: Any = if (!request.className.isNullOrBlank()) {
-                        try {
-                            Class.forName(request.className)
-                        } catch (e: Throwable) {
-                            return HookIpcResponse(success = false, message = "Class not found: ${e.message}")
-                        }
+                        val clazz = MethodInvoker.loadClass(request.className, currentActivity?.classLoader)
+                            ?: return HookIpcResponse(success = false, message = "Class not found: ${request.className}")
+                        clazz
                     } else {
                         currentActivity!!
                     }

@@ -281,12 +281,16 @@ class McpProtocolHandler(private val context: Context) {
             // LSPosed Deep Reverse Engineering Tools
             Tool(
                 name = "hook_inspect_activity",
-                description = "[LSPosed] Inspect current active Activity in the target app, listing internal fields, state, and methods in memory.",
+                description = "[LSPosed] Inspect current active Activity, Application, or specific class in the target app, listing internal fields, state, and methods in memory.",
                 inputSchema = ToolInputSchema(
                     properties = buildJsonObject {
                         put("package_name", buildJsonObject {
                             put("type", JsonPrimitive("string"))
                             put("description", JsonPrimitive("Target app package name (defaults to current foreground app if omitted)"))
+                        })
+                        put("class_name", buildJsonObject {
+                            put("type", JsonPrimitive("string"))
+                            put("description", JsonPrimitive("Target class name to inspect (optional, defaults to active Activity or Application)"))
                         })
                     }
                 )
@@ -653,6 +657,7 @@ class McpProtocolHandler(private val context: Context) {
             // LSPosed Deep Hook Tools
             "hook_inspect_activity" -> {
                 var pkg = args["package_name"]?.jsonPrimitive?.contentOrNull
+                val cls = args["class_name"]?.jsonPrimitive?.contentOrNull
                 if (pkg.isNullOrBlank()) {
                     val (fgPkg, _) = PrivilegeManager.getForegroundApp(context)
                     pkg = fgPkg
@@ -661,9 +666,16 @@ class McpProtocolHandler(private val context: Context) {
                     return CallToolResult(content = listOf(ContentItem(text = "Cannot determine target package")), isError = true)
                 }
 
-                val resp = HookClientManager.sendCommand(pkg, HookIpcRequest(action = "GET_ACTIVITY_INFO", targetPackage = pkg))
+                val resp = HookClientManager.sendCommand(
+                    pkg,
+                    HookIpcRequest(
+                        action = "GET_ACTIVITY_INFO",
+                        targetPackage = pkg,
+                        className = cls
+                    )
+                )
                 val text = if (resp.success) {
-                    "Activity Inspection:\n${resp.data?.toString() ?: resp.message}"
+                    "Activity/Process Inspection:\n${resp.data?.toString() ?: resp.message}"
                 } else {
                     resp.message ?: "Failed"
                 }

@@ -58,9 +58,18 @@ object ViewTreeExtractor {
         view: View,
         idCounter: AtomicInteger
     ): UiNode {
-        val rect = Rect()
-        view.getGlobalVisibleRect(rect)
-        val bounds = RectBounds(rect.left, rect.top, rect.right, rect.bottom)
+        val loc = IntArray(2)
+        try {
+            view.getLocationOnScreen(loc)
+        } catch (_: Throwable) {
+        }
+        val bounds = if (view.width > 0 && view.height > 0) {
+            RectBounds(loc[0], loc[1], loc[0] + view.width, loc[1] + view.height)
+        } else {
+            val rect = Rect()
+            view.getGlobalVisibleRect(rect)
+            RectBounds(rect.left, rect.top, rect.right, rect.bottom)
+        }
 
         val resIdName: String? = if (view.id != View.NO_ID && view.id > 0) {
             try {

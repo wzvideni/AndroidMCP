@@ -846,7 +846,7 @@ class McpProtocolHandler(private val context: Context) {
                             val (_, out) = RootBridge.exec("cmd clipboard get 2>/dev/null")
                             clipText = out.trim()
                         }
-                        CallToolResult(content = listOf(ContentItem(text = clipText ?: "")))
+                        CallToolResult(content = listOf(ContentItem(text = clipText)))
                     }
                     "set" -> {
                         val newText = text ?: ""

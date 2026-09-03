@@ -8,10 +8,12 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
+@OptIn(ExperimentalSerializationApi::class)
 val jsonConfig = Json {
     ignoreUnknownKeys = true
     isLenient = true
     encodeDefaults = true
+    explicitNulls = false
     prettyPrint = false
 }
 
@@ -61,7 +63,7 @@ data class ServerCapabilities(
     val tools: ToolsCapability = ToolsCapability(),
     val resources: ResourcesCapability = ResourcesCapability(),
     val prompts: PromptsCapability = PromptsCapability(),
-    val logging: LoggingCapability = LoggingCapability()
+    val logging: JsonObject = JsonObject(emptyMap())
 )
 
 @Serializable
@@ -78,11 +80,6 @@ data class ResourcesCapability(
 @Serializable
 data class PromptsCapability(
     val listChanged: Boolean = true
-)
-
-@Serializable
-data class LoggingCapability(
-    val level: String = "info"
 )
 
 @Serializable

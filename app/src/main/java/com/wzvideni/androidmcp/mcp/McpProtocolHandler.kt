@@ -31,15 +31,28 @@ class McpProtocolHandler(private val context: Context) {
 
     private var lastDumpedTree: UiNode? = null
 
-    suspend fun handleJsonRpc(request: JsonRpcRequest): JsonRpcResponse {
+    suspend fun handleJsonRpc(request: JsonRpcRequest): JsonRpcResponse? {
+        // Notifications (JSON-RPC requests without id) MUST NEVER receive a response
+        if (request.id == null || request.method.startsWith("notifications/")) {
+            when (request.method) {
+                "notifications/initialized", "initialized" -> {
+                    Log.i(TAG, "Client sent initialized notification")
+                }
+                "notifications/cancelled", "$/cancelRequest" -> {
+                    Log.i(TAG, "Client sent cancel request notification: ${request.params}")
+                }
+                else -> {
+                    Log.d(TAG, "Received notification: ${request.method}")
+                }
+            }
+            return null
+        }
+
         return try {
             when (request.method) {
                 "initialize" -> {
                     val result = InitializeResult()
                     JsonRpcResponse(id = request.id, result = jsonConfig.encodeToJsonElement(result))
-                }
-                "notifications/initialized", "initialized" -> {
-                    JsonRpcResponse(id = request.id, result = JsonObject(emptyMap()))
                 }
                 "ping" -> {
                     JsonRpcResponse(id = request.id, result = JsonPrimitive("pong"))

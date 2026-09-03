@@ -49,9 +49,18 @@ class McpHttpServer(
                 anyHost()
                 allowHeader(HttpHeaders.ContentType)
                 allowHeader(HttpHeaders.Authorization)
+                allowHeader(HttpHeaders.Accept)
+                allowHeader("X-Requested-With")
+                allowHeader("mcp-version")
+                allowHeader("mcp-protocol-version")
+                allowHeadersPrefixed("")
                 allowMethod(HttpMethod.Options)
                 allowMethod(HttpMethod.Get)
                 allowMethod(HttpMethod.Post)
+                allowMethod(HttpMethod.Put)
+                allowMethod(HttpMethod.Delete)
+                allowMethod(HttpMethod.Head)
+                allowNonSimpleContentTypes = true
             }
             install(ContentNegotiation) {
                 json(jsonConfig)
@@ -118,13 +127,28 @@ class McpHttpServer(
         try {
             val sessionId = call.request.queryParameters["sessionId"]
             val body = call.receiveText()
+            if (body.isBlank()) {
+                call.respond(HttpStatusCode.Accepted)
+                return
+            }
             val req = jsonConfig.decodeFromString<JsonRpcRequest>(body)
             val resp = handler.handleJsonRpc(req)
+
+            if (resp == null) {
+                // Notification (e.g. notifications/initialized): Do not emit to SSE and respond 202 Accepted
+                call.respond(HttpStatusCode.Accepted)
+                return
+            }
+
             val respJson = jsonConfig.encodeToString(resp)
             if (sessionId != null) {
+                // MCP SSE transport: emit response to SSE channel and acknowledge POST with 202 Accepted
                 sseMessages.emit(sessionId to respJson)
+                call.respond(HttpStatusCode.Accepted)
+            } else {
+                // Direct HTTP transport: respond with JSON body directly
+                call.respondText(respJson, ContentType.Application.Json, HttpStatusCode.OK)
             }
-            call.respondText(respJson, ContentType.Application.Json, HttpStatusCode.OK)
         } catch (e: Throwable) {
             Log.e(TAG, "Error handling RPC POST: ${e.message}", e)
             val errResp = JsonRpcResponse(
@@ -138,12 +162,17 @@ class McpHttpServer(
 
     private suspend fun handleSseStream(session: ServerSSESession, sseMessages: MutableSharedFlow<Pair<String, String>>) {
         val sessionId = UUID.randomUUID().toString()
+        Log.i(TAG, "SSE client connected, sessionId=$sessionId")
         session.send(ServerSentEvent(event = "endpoint", data = "/mcp/v1/messages?sessionId=$sessionId"))
 
-        sseMessages.asSharedFlow().collect { (targetSession, message) ->
-            if (targetSession == sessionId || targetSession == "all") {
-                session.send(ServerSentEvent(event = "message", data = message))
+        try {
+            sseMessages.asSharedFlow().collect { (targetSession, message) ->
+                if (targetSession == sessionId || targetSession == "all") {
+                    session.send(ServerSentEvent(event = "message", data = message))
+                }
             }
+        } catch (e: Throwable) {
+            Log.i(TAG, "SSE client disconnected, sessionId=$sessionId: ${e.message}")
         }
     }
 

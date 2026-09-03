@@ -10,6 +10,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import com.wzvideni.androidmcp.R
 import com.wzvideni.androidmcp.engine.ShizukuBridge
 import com.wzvideni.androidmcp.mcp.McpProtocolHandler
@@ -76,7 +77,7 @@ class McpForegroundService : Service() {
         when (intent?.action) {
             ACTION_STOP -> {
                 stopServer()
-                stopForeground(true)
+                ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
                 stopSelf()
             }
             else -> {

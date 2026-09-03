@@ -1,8 +1,10 @@
 package com.wzvideni.androidmcp.mcp
 
+import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.os.Environment
 import android.util.Log
 import com.wzvideni.androidmcp.engine.InputController
 import com.wzvideni.androidmcp.engine.McpAccessibilityService
@@ -10,18 +12,52 @@ import com.wzvideni.androidmcp.engine.PrivilegeManager
 import com.wzvideni.androidmcp.engine.RootBridge
 import com.wzvideni.androidmcp.engine.ShizukuBridge
 import com.wzvideni.androidmcp.hook.HookClientManager
-import com.wzvideni.androidmcp.model.*
+import com.wzvideni.androidmcp.model.CallToolResult
+import com.wzvideni.androidmcp.model.ContentItem
+import com.wzvideni.androidmcp.model.GetPromptResult
+import com.wzvideni.androidmcp.model.HookIpcRequest
+import com.wzvideni.androidmcp.model.InitializeResult
+import com.wzvideni.androidmcp.model.JsonRpcError
+import com.wzvideni.androidmcp.model.JsonRpcRequest
+import com.wzvideni.androidmcp.model.JsonRpcResponse
+import com.wzvideni.androidmcp.model.ListPromptsResult
+import com.wzvideni.androidmcp.model.ListResourcesResult
+import com.wzvideni.androidmcp.model.ListToolsResult
+import com.wzvideni.androidmcp.model.Prompt
+import com.wzvideni.androidmcp.model.PromptMessage
+import com.wzvideni.androidmcp.model.ReadResourceResult
+import com.wzvideni.androidmcp.model.RectBounds
+import com.wzvideni.androidmcp.model.Resource
+import com.wzvideni.androidmcp.model.ResourceContent
+import com.wzvideni.androidmcp.model.Tool
+import com.wzvideni.androidmcp.model.ToolInputSchema
+import com.wzvideni.androidmcp.model.UiNode
+import com.wzvideni.androidmcp.model.jsonConfig
 import com.wzvideni.androidmcp.vision.ScreenCapturer
 import com.wzvideni.androidmcp.vision.SetOfMarkAnnotator
 import com.wzvideni.androidmcp.vision.UiTreeFlattener
-import org.xmlpull.v1.XmlPullParser
-import org.xmlpull.v1.XmlPullParserFactory
-import java.io.StringReader
-import java.util.ArrayDeque
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.*
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.float
+import kotlinx.serialization.json.floatOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.put
+import org.xmlpull.v1.XmlPullParser
+import org.xmlpull.v1.XmlPullParserFactory
+import java.io.File
+import java.io.StringReader
+import java.util.ArrayDeque
 
 class McpProtocolHandler(
     val context: Context,
@@ -31,6 +67,7 @@ class McpProtocolHandler(
 
     companion object {
         private const val TAG = "McpProtocolHandler"
+        private val BOUNDS_REGEX = Regex("\\[(\\d+),(\\d+)]\\[(\\d+),(\\d+)]")
     }
 
     private var lastDumpedTree: UiNode? = null
@@ -474,6 +511,7 @@ class McpProtocolHandler(
         return tree to source
     }
 
+    @SuppressLint("SdCardPath")
     private suspend fun executeTool(name: String, args: JsonObject): CallToolResult {
         return when (name) {
             "get_ui_hierarchy" -> {
@@ -502,13 +540,10 @@ class McpProtocolHandler(
                 val annotateSom = args["annotate_som"]?.jsonPrimitive?.booleanOrNull ?: false
                 val quality = args["quality"]?.jsonPrimitive?.intOrNull ?: 80
 
-                var bitmap = ScreenCapturer.captureBitmap()
-                if (bitmap == null) {
-                    return CallToolResult(
-                        content = listOf(ContentItem(text = "Screenshot capture failed. Ensure Root, Shizuku, or Accessibility is enabled.")),
-                        isError = true
-                    )
-                }
+                var bitmap = ScreenCapturer.captureBitmap() ?: return CallToolResult(
+                    content = listOf(ContentItem(text = "Screenshot capture failed. Ensure Root, Shizuku, or Accessibility is enabled.")),
+                    isError = true
+                )
 
                 if (annotateSom && lastDumpedTree != null) {
                     val interactiveElements = UiTreeFlattener.flattenInteractive(lastDumpedTree!!)
@@ -807,7 +842,7 @@ class McpProtocolHandler(
                 val query = args["query"]?.jsonPrimitive?.contentOrNull ?: "SELECT name FROM sqlite_master WHERE type='table';"
                 val limit = args["limit"]?.jsonPrimitive?.intOrNull ?: 50
 
-                val dbDir = "/data/data/$pkg/databases"
+                val dbDir = File(Environment.getDataDirectory(), "data/$pkg/databases").path
                 if (dbName.isNullOrBlank()) {
                     val (_, out) = RootBridge.exec("ls -1 $dbDir 2>/dev/null")
                     val dbs = out.lines().filter { it.endsWith(".db") || it.endsWith(".sqlite") }
@@ -817,7 +852,7 @@ class McpProtocolHandler(
                     val safeQuery = if (query.trim().uppercase().startsWith("SELECT") && !query.uppercase().contains("LIMIT")) "$query LIMIT $limit;" else query
                     val (code, out) = RootBridge.exec("sqlite3 -json $dbPath \"$safeQuery\" 2>/dev/null || sqlite3 -header -column $dbPath \"$safeQuery\" 2>/dev/null")
                     CallToolResult(
-                        content = listOf(ContentItem(text = if (out.isNotBlank()) out else "Query executed (exitCode=$code, empty output)"))
+                        content = listOf(ContentItem(text = out.ifBlank { "Query executed (exitCode=$code, empty output)" }))
                     )
                 }
             }
@@ -827,7 +862,7 @@ class McpProtocolHandler(
                 val fileName = args["file_name"]?.jsonPrimitive?.contentOrNull
                 val filterKey = args["key"]?.jsonPrimitive?.contentOrNull
 
-                val spDir = "/data/data/$pkg/shared_prefs"
+                val spDir = File(Environment.getDataDirectory(), "data/$pkg/shared_prefs").path
                 if (fileName.isNullOrBlank()) {
                     val (_, out) = RootBridge.exec("ls -1 $spDir 2>/dev/null")
                     val files = out.lines().filter { it.endsWith(".xml") }
@@ -1151,7 +1186,7 @@ class McpProtocolHandler(
                             val scrollable = parser.getAttributeValue(null, "scrollable") == "true"
                             val boundsStr = parser.getAttributeValue(null, "bounds") ?: "[0,0][0,0]"
 
-                            val boundsMatch = Regex("\\[(\\d+),(\\d+)\\]\\[(\\d+),(\\d+)\\]").find(boundsStr)
+                            val boundsMatch = BOUNDS_REGEX.find(boundsStr)
                             val left = boundsMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
                             val top = boundsMatch?.groupValues?.get(2)?.toIntOrNull() ?: 0
                             val right = boundsMatch?.groupValues?.get(3)?.toIntOrNull() ?: 0
@@ -1274,6 +1309,7 @@ class McpProtocolHandler(
             }
             jsonConfig.encodeToString(jsonObject)
         } catch (e: Throwable) {
+            e.printStackTrace()
             xml
         }
     }

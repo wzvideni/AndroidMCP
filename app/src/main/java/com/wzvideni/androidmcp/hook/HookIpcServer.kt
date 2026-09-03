@@ -1,5 +1,6 @@
 package com.wzvideni.androidmcp.hook
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.net.LocalServerSocket
 import android.net.LocalSocket
@@ -10,7 +11,6 @@ import com.wzvideni.androidmcp.model.jsonConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import java.io.BufferedReader
@@ -148,6 +148,7 @@ object HookIpcServer {
         }
     }
 
+    @SuppressLint("PrivateApi")
     private fun processRequest(request: HookIpcRequest): HookIpcResponse {
         val currentActivity = currentActivityRef?.get()
 

@@ -1,5 +1,6 @@
 package com.wzvideni.androidmcp.hook
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.graphics.Rect
 import android.view.View
@@ -7,14 +8,15 @@ import android.view.ViewGroup
 import android.widget.Checkable
 import android.widget.EditText
 import android.widget.TextView
+import androidx.core.view.isVisible
 import com.wzvideni.androidmcp.model.RectBounds
 import com.wzvideni.androidmcp.model.UiNode
 import java.util.concurrent.atomic.AtomicInteger
-import androidx.core.view.isVisible
 
 /**
  * Extracts in-memory View hierarchy and Jetpack Compose semantics tree directly inside the target process.
  */
+@SuppressLint("PrivateApi", "DiscouragedPrivateApi")
 object ViewTreeExtractor {
 
     fun extractFromActivity(activity: Activity): UiNode {

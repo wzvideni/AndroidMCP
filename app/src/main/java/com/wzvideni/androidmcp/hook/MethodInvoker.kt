@@ -1,5 +1,6 @@
 package com.wzvideni.androidmcp.hook
 
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.Application
 import android.content.Context
@@ -9,6 +10,7 @@ import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
 
+@SuppressLint("PrivateApi")
 object MethodInvoker {
 
     /**

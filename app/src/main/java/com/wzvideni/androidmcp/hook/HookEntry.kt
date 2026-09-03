@@ -16,7 +16,6 @@ class HookEntry : IYukiHookXposedInit {
         isEnableDataChannel = false
     }
 
-    @Suppress("DEPRECATION")
     override fun onHook() = encase {
         loadSystem {
             // Start Hook IPC server when injected into system framework (android / system_server)
@@ -31,37 +30,24 @@ class HookEntry : IYukiHookXposedInit {
             HookIpcServer.ensureServerStarted(packageName)
 
             // Hook Activity lifecycle to capture current active Activity and start IPC server
-            @Suppress("DEPRECATION")
-            Activity::class.java.hook {
-                injectMember {
-                    method {
-                        name = "onCreate"
-                        param(Bundle::class.java)
-                    }
-                    afterHook {
-                        val activity = instance<Activity>()
-                        HookIpcServer.updateCurrentActivity(activity)
-                    }
+            Activity::class.java.getDeclaredMethod("onCreate", Bundle::class.java).hook {
+                after {
+                    val activity = instance<Activity>()
+                    HookIpcServer.updateCurrentActivity(activity)
                 }
-                injectMember {
-                    method {
-                        name = "onResume"
-                        emptyParam()
-                    }
-                    afterHook {
-                        val activity = instance<Activity>()
-                        HookIpcServer.updateCurrentActivity(activity)
-                    }
+            }
+
+            Activity::class.java.getDeclaredMethod("onResume").hook {
+                after {
+                    val activity = instance<Activity>()
+                    HookIpcServer.updateCurrentActivity(activity)
                 }
-                injectMember {
-                    method {
-                        name = "onDestroy"
-                        emptyParam()
-                    }
-                    afterHook {
-                        val activity = instance<Activity>()
-                        HookIpcServer.onActivityDestroyed(activity)
-                    }
+            }
+
+            Activity::class.java.getDeclaredMethod("onDestroy").hook {
+                after {
+                    val activity = instance<Activity>()
+                    HookIpcServer.onActivityDestroyed(activity)
                 }
             }
         }

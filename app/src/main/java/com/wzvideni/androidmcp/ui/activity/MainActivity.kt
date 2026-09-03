@@ -53,7 +53,7 @@ class MainActivity : ComponentActivity() {
         )
     }
 
-    private var refreshTrigger by mutableStateOf(0)
+    private var refreshTrigger by mutableIntStateOf(0)
 
     private val shizukuPermissionListener = Shizuku.OnRequestPermissionResultListener { _, _ ->
         refreshTrigger++

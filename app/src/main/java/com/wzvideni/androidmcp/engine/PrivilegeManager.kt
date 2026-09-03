@@ -14,10 +14,11 @@ import android.view.WindowManager
 import com.highcapable.yukihookapi.YukiHookAPI
 import com.wzvideni.androidmcp.model.DeviceInfo
 import com.wzvideni.androidmcp.model.PrivilegeStatus
+import com.wzvideni.androidmcp.hook.HookClientManager
+import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.net.NetworkInterface
-import com.wzvideni.androidmcp.hook.HookClientManager
 import java.util.Collections
 
 object PrivilegeManager {
@@ -150,7 +151,7 @@ object PrivilegeManager {
 
             // Normal context launch
             val intent = if (uri != null) {
-                Intent(Intent.ACTION_VIEW, Uri.parse(uri)).apply { setPackage(packageName) }
+                Intent(Intent.ACTION_VIEW, uri.toUri()).apply { setPackage(packageName) }
             } else {
                 context.packageManager.getLaunchIntentForPackage(packageName)
             }

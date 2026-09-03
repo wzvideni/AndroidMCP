@@ -31,6 +31,7 @@ class HookEntry : IYukiHookXposedInit {
             HookIpcServer.ensureServerStarted(packageName)
 
             // Hook Activity lifecycle to capture current active Activity and start IPC server
+            @Suppress("DEPRECATION")
             Activity::class.java.hook {
                 injectMember {
                     method {

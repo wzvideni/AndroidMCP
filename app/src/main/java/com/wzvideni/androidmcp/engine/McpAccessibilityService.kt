@@ -141,6 +141,54 @@ class McpAccessibilityService : AccessibilityService() {
         deferred.await()
     }
 
+    suspend fun longPress(x: Float, y: Float, durationMs: Long = 800): Boolean = withContext(Dispatchers.Main) {
+        val path = Path().apply { moveTo(x, y) }
+        val stroke = GestureDescription.StrokeDescription(path, 0, durationMs.coerceAtLeast(400))
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        val deferred = CompletableDeferred<Boolean>()
+
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                deferred.complete(true)
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                deferred.complete(false)
+            }
+        }, null)
+
+        deferred.await()
+    }
+
+    suspend fun dragAndDrop(
+        x1: Float,
+        y1: Float,
+        x2: Float,
+        y2: Float,
+        holdMs: Long = 400,
+        dragMs: Long = 500
+    ): Boolean = withContext(Dispatchers.Main) {
+        val path = Path().apply {
+            moveTo(x1, y1)
+            lineTo(x2, y2)
+        }
+        val stroke = GestureDescription.StrokeDescription(path, 0, (holdMs + dragMs).coerceAtLeast(400))
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        val deferred = CompletableDeferred<Boolean>()
+
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                deferred.complete(true)
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                deferred.complete(false)
+            }
+        }, null)
+
+        deferred.await()
+    }
+
     fun inputText(text: String): Boolean {
         val root = rootInActiveWindow ?: return false
         val focused = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false

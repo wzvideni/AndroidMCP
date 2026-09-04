@@ -68,7 +68,7 @@ object InputController {
             if (ok) return@withContext true to "Shizuku swipe ($x1, $y1) -> ($x2, $y2)"
         }
 
-        // 2. Try Root
+        // 3. Try Root
         if (RootBridge.isRootAvailable()) {
             val (code, _) = RootBridge.exec("input swipe ${x1.toInt()} ${y1.toInt()} ${x2.toInt()} ${y2.toInt()} $durationMs")
             if (code == 0) return@withContext true to "Root swipe ($x1, $y1) -> ($x2, $y2)"
@@ -82,6 +82,84 @@ object InputController {
         }
 
         false to "No available privilege backend to execute swipe"
+    }
+
+    suspend fun longPress(
+        x: Float,
+        y: Float,
+        durationMs: Long = 800,
+        targetPackage: String? = null,
+        targetId: String? = null,
+        viewId: Int? = null
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        // 1. Try LSPosed in-process long click if target app is hooked
+        if (!targetPackage.isNullOrBlank() && (!targetId.isNullOrBlank() || viewId != null)) {
+            val hookResp = HookClientManager.sendCommand(
+                targetPackage,
+                HookIpcRequest(
+                    action = "LONG_CLICK_VIEW",
+                    targetPackage = targetPackage,
+                    targetId = targetId,
+                    viewId = viewId
+                )
+            )
+            if (hookResp.success) {
+                return@withContext true to "LSPosed in-process long-click dispatched: ${hookResp.message}"
+            }
+        }
+
+        // 2. Try Shizuku fast input
+        if (ShizukuBridge.hasPermission()) {
+            val ok = ShizukuBridge.injectSwipe(x, y, x, y, durationMs)
+            if (ok) return@withContext true to "Shizuku long press dispatched at ($x, $y) for ${durationMs}ms"
+        }
+
+        // 3. Try Root input
+        if (RootBridge.isRootAvailable()) {
+            val (code, _) = RootBridge.exec("input swipe ${x.toInt()} ${y.toInt()} ${x.toInt()} ${y.toInt()} $durationMs")
+            if (code == 0) return@withContext true to "Root long press dispatched at ($x, $y) for ${durationMs}ms"
+        }
+
+        // 4. Try Accessibility gesture
+        val a11y = McpAccessibilityService.instance
+        if (a11y != null) {
+            val ok = a11y.longPress(x, y, durationMs)
+            if (ok) return@withContext true to "Accessibility long press dispatched at ($x, $y) for ${durationMs}ms"
+        }
+
+        false to "No available privilege backend to execute long press"
+    }
+
+    suspend fun dragAndDrop(
+        x1: Float,
+        y1: Float,
+        x2: Float,
+        y2: Float,
+        holdMs: Long = 400,
+        dragMs: Long = 500
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val totalDuration = holdMs + dragMs
+
+        // 1. Try Shizuku
+        if (ShizukuBridge.hasPermission()) {
+            val ok = ShizukuBridge.injectSwipe(x1, y1, x2, y2, totalDuration)
+            if (ok) return@withContext true to "Shizuku drag ($x1, $y1) -> ($x2, $y2)"
+        }
+
+        // 2. Try Root
+        if (RootBridge.isRootAvailable()) {
+            val (code, _) = RootBridge.exec("input swipe ${x1.toInt()} ${y1.toInt()} ${x2.toInt()} ${y2.toInt()} $totalDuration")
+            if (code == 0) return@withContext true to "Root drag ($x1, $y1) -> ($x2, $y2)"
+        }
+
+        // 3. Try Accessibility
+        val a11y = McpAccessibilityService.instance
+        if (a11y != null) {
+            val ok = a11y.dragAndDrop(x1, y1, x2, y2, holdMs, dragMs)
+            if (ok) return@withContext true to "Accessibility drag ($x1, $y1) -> ($x2, $y2)"
+        }
+
+        false to "No available privilege backend to execute drag and drop"
     }
 
     suspend fun inputText(text: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {

@@ -223,6 +223,21 @@ object HookIpcServer {
                     )
                 }
             }
+            "LONG_CLICK_VIEW" -> {
+                if (currentActivity == null) {
+                    HookIpcResponse(success = false, message = "No active Activity")
+                } else {
+                    val clicked = MethodInvoker.longClickViewByIdOrTag(
+                        currentActivity,
+                        request.targetId,
+                        request.viewId
+                    )
+                    HookIpcResponse(
+                        success = clicked,
+                        message = if (clicked) "Long click dispatched successfully" else "Failed to find or long click view"
+                    )
+                }
+            }
             "CALL_METHOD" -> {
                 if (currentActivity == null && request.className.isNullOrBlank()) {
                     HookIpcResponse(success = false, message = "No active Activity and no ClassName specified")

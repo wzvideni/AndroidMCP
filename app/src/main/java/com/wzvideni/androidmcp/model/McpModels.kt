@@ -272,6 +272,18 @@ data class DeviceInfo(
 )
 
 @Serializable
+data class NotificationItem(
+    val id: Int = 0,
+    val key: String? = null,
+    val packageName: String,
+    val title: String? = null,
+    val text: String? = null,
+    val subText: String? = null,
+    val postTime: Long = System.currentTimeMillis(),
+    val isClearable: Boolean = true
+)
+
+@Serializable
 data class PrivilegeStatus(
     val lsposedActive: Boolean,
     val hookedAppsCount: Int,
@@ -279,7 +291,8 @@ data class PrivilegeStatus(
     val shizukuRunning: Boolean,
     val shizukuAuthorized: Boolean,
     val rootAvailable: Boolean,
-    val accessibilityActive: Boolean
+    val accessibilityActive: Boolean,
+    val notificationActive: Boolean = false
 )
 
 // ----------------------------------------------------

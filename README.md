@@ -50,16 +50,19 @@
 
 ---
 
-## 🛠️ MCP 工具清单 (16+ 原生超级工具)
+## 🛠️ MCP 工具清单 (21+ 原生超级工具)
 
 ### 🎯 智能 UI 触控与感知
 | 工具名称 | 参数 | 说明 |
 | :--- | :--- | :--- |
 | `get_ui_hierarchy` | `annotate_som?: boolean` | 智能抓取当前屏幕 UI 树（优先 LSPosed 内存树 -> 其次 A11y -> 兜底 UiAutomator dump），生成 Token 紧凑格式。 |
 | `click_by_selector` | `text?`, `resource_id?`, `content_desc?`, `class_name?`, `match_type?` | **智能选择器点击**：无需计算坐标，直接根据文字或 ID 自动查找目标节点、计算中心点并完成点击。 |
+| `wait_for_element` | `text?`, `resource_id?`, `condition?`, `timeout_ms?`, `auto_click?: boolean` | **智能等待元素**：持续监听 UI 树直至目标元素出现/消失，支持自动直接点击，彻底解决异步加载竞态。 |
 | `capture_screenshot` | `quality?: int`, `annotate_som?: boolean` | 抓取屏幕图像（支持 Base64 返回与 SoM 角标实时绘制）。 |
 | `tap` | `x: float`, `y: float`, `element_id?: int` | 模拟屏幕绝对坐标点击或通过 SoM ID 点击。 |
+| `long_press` | `x?`, `y?`, `element_id?`, `duration_ms?: int` | **长按手势**：支持按坐标或 SoM ID 长按触发上下文菜单或拖拽起始。 |
 | `swipe` | `x1`, `y1`, `x2`, `y2`, `duration_ms?: int` | 模拟任意轨迹的平滑滑动与手势滚动。 |
+| `drag_and_drop` | `from_element_id?`, `to_element_id?`, `x1?`, `y1?`, `x2?`, `y2?` | **拖拽手势**：模拟长按并拖拽至目标位置/组件。 |
 | `input_text` | `text: string` | 输入文本（支持完整 Unicode 与中文字符直接注入）。 |
 | `press_key` | `key: string` | 模拟物理按键（`BACK`, `HOME`, `RECENTS`, `POWER`, `VOLUME_UP`, `VOLUME_DOWN` 等）。 |
 
@@ -76,6 +79,8 @@
 ### 📱 系统与特权控制
 | 工具名称 | 参数 | 说明 |
 | :--- | :--- | :--- |
+| `get_notifications` | `package_name?`, `filter?`, `limit?: int`, `clear?: boolean` | **系统通知读取**：实时抓取与历史过滤短信验证码、第三方 App 推送、状态栏通知。 |
+| `wait_for_notification` | `package_name?`, `text_contains?`, `timeout_ms?: int` | **异步等待通知**：挂起等待新收到的指定短信/通知（专为 2FA/OTP 验证码自动化设计）。 |
 | `manage_clipboard` | `action: 'get' \| 'set'`, `text?: string` | 全系统剪贴板读取与写入，不受前台焦点限制。 |
 | `system_control` | `action`, `param?` | 深度系统管控（`wifi_on`/`off`, `set_proxy`, `airplane_on`, `set_screen_density`, `grant_all_permissions` 等）。 |
 | `system_file_ops` | `action: 'read' \| 'write' \| 'list' \| 'delete'`, `path`, `content?`, `as_base64?: boolean` | 对系统分区与私有沙箱进行任意文件读写和管理。 |

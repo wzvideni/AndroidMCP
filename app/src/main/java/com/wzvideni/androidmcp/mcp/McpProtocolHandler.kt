@@ -33,11 +33,16 @@ import com.wzvideni.androidmcp.model.Tool
 import com.wzvideni.androidmcp.model.ToolInputSchema
 import com.wzvideni.androidmcp.model.UiNode
 import com.wzvideni.androidmcp.model.jsonConfig
+import com.wzvideni.androidmcp.model.NotificationItem
+import com.wzvideni.androidmcp.notification.McpNotificationListenerService
 import com.wzvideni.androidmcp.vision.ScreenCapturer
 import com.wzvideni.androidmcp.vision.SetOfMarkAnnotator
 import com.wzvideni.androidmcp.vision.UiTreeFlattener
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -470,6 +475,75 @@ class McpProtocolHandler(
                         put("extras", buildJsonObject { put("type", JsonPrimitive("object")); put("description", "Key-value string extras") })
                     },
                     required = listOf("action")
+                )
+            ),
+            Tool(
+                name = "wait_for_element",
+                description = "Smart UI element waiter. Continuously monitors the UI hierarchy until an element matching the selector appears (or disappears). Solves race conditions and prevents token waste.",
+                inputSchema = ToolInputSchema(
+                    properties = buildJsonObject {
+                        put("text", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "Text to match") })
+                        put("resource_id", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "Resource ID to match") })
+                        put("content_desc", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "Content description to match") })
+                        put("class_name", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "Class name filter") })
+                        put("match_type", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "'contains' (default), 'exact', or 'regex'") })
+                        put("condition", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "'present' (default, wait until visible) or 'absent' (wait until gone)") })
+                        put("timeout_ms", buildJsonObject { put("type", JsonPrimitive("integer")); put("description", "Timeout in ms, default 5000 (max 30000)") })
+                        put("interval_ms", buildJsonObject { put("type", JsonPrimitive("integer")); put("description", "Check interval in ms, default 400") })
+                        put("auto_click", buildJsonObject { put("type", JsonPrimitive("boolean")); put("description", "If true, clicks the matched element immediately upon appearance") })
+                    }
+                )
+            ),
+            Tool(
+                name = "long_press",
+                description = "Perform long-press gesture on screen by (x, y) coordinates or by element_id (Set-of-Mark ID from get_ui_hierarchy). Triggers context menus or drag initiation.",
+                inputSchema = ToolInputSchema(
+                    properties = buildJsonObject {
+                        put("element_id", buildJsonObject { put("type", JsonPrimitive("integer")); put("description", "Numeric element ID from get_ui_hierarchy / SoM screenshot") })
+                        put("x", buildJsonObject { put("type", JsonPrimitive("number")); put("description", "Screen X coordinate") })
+                        put("y", buildJsonObject { put("type", JsonPrimitive("number")); put("description", "Screen Y coordinate") })
+                        put("duration_ms", buildJsonObject { put("type", JsonPrimitive("integer")); put("description", "Press duration in milliseconds, default 800") })
+                    }
+                )
+            ),
+            Tool(
+                name = "drag_and_drop",
+                description = "Perform a drag-and-drop gesture from a source point/element to a target point/element.",
+                inputSchema = ToolInputSchema(
+                    properties = buildJsonObject {
+                        put("from_element_id", buildJsonObject { put("type", JsonPrimitive("integer")); put("description", "Source element ID from get_ui_hierarchy") })
+                        put("to_element_id", buildJsonObject { put("type", JsonPrimitive("integer")); put("description", "Target element ID from get_ui_hierarchy") })
+                        put("x1", buildJsonObject { put("type", JsonPrimitive("number")); put("description", "Start X coordinate") })
+                        put("y1", buildJsonObject { put("type", JsonPrimitive("number")); put("description", "Start Y coordinate") })
+                        put("x2", buildJsonObject { put("type", JsonPrimitive("number")); put("description", "End X coordinate") })
+                        put("y2", buildJsonObject { put("type", JsonPrimitive("number")); put("description", "End Y coordinate") })
+                        put("hold_ms", buildJsonObject { put("type", JsonPrimitive("integer")); put("description", "Initial hold duration before moving, default 400") })
+                        put("duration_ms", buildJsonObject { put("type", JsonPrimitive("integer")); put("description", "Drag movement duration in ms, default 500") })
+                    }
+                )
+            ),
+            Tool(
+                name = "get_notifications",
+                description = "Retrieve active and recent system notifications (SMS verification codes, app push alerts, OTP messages, etc.). Supports package name and keyword filtering.",
+                inputSchema = ToolInputSchema(
+                    properties = buildJsonObject {
+                        put("package_name", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "Filter notifications from a specific package") })
+                        put("filter", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "Keyword filter for title or text content") })
+                        put("limit", buildJsonObject { put("type", JsonPrimitive("integer")); put("description", "Max notifications returned, default 20") })
+                        put("clear", buildJsonObject { put("type", JsonPrimitive("boolean")); put("description", "If true, cancels/dismisses the retrieved notifications") })
+                    }
+                )
+            ),
+            Tool(
+                name = "wait_for_notification",
+                description = "Asynchronously wait for a new incoming notification matching criteria (e.g., SMS verification code / OTP) within a timeout.",
+                inputSchema = ToolInputSchema(
+                    properties = buildJsonObject {
+                        put("package_name", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "Filter incoming notification by package name") })
+                        put("text_contains", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "Substring or keyword required in notification title/text") })
+                        put("timeout_ms", buildJsonObject { put("type", JsonPrimitive("integer")); put("description", "Timeout in ms to wait, default 15000 (max 60000)") })
+                        put("clear_after_found", buildJsonObject { put("type", JsonPrimitive("boolean")); put("description", "Whether to dismiss notification after matched") })
+                    }
                 )
             )
         )
@@ -1017,6 +1091,296 @@ class McpProtocolHandler(
                 CallToolResult(content = listOf(ContentItem(text = "Intent Command: $sb\nExitCode: $code\nOutput:\n$out")))
             }
 
+            "wait_for_element" -> {
+                val text = args["text"]?.jsonPrimitive?.contentOrNull
+                val resId = args["resource_id"]?.jsonPrimitive?.contentOrNull
+                val contentDesc = args["content_desc"]?.jsonPrimitive?.contentOrNull
+                val className = args["class_name"]?.jsonPrimitive?.contentOrNull
+                val matchType = args["match_type"]?.jsonPrimitive?.content ?: "contains"
+                val condition = args["condition"]?.jsonPrimitive?.content ?: "present"
+                val timeoutMs = (args["timeout_ms"]?.jsonPrimitive?.longOrNull ?: 5000L).coerceIn(500L, 30000L)
+                val intervalMs = (args["interval_ms"]?.jsonPrimitive?.longOrNull ?: 400L).coerceIn(100L, 2000L)
+                val autoClick = args["auto_click"]?.jsonPrimitive?.booleanOrNull ?: false
+
+                val startTime = System.currentTimeMillis()
+                var matchedNode: UiNode? = null
+
+                while (System.currentTimeMillis() - startTime < timeoutMs) {
+                    val (tree, _) = dumpUiTree()
+                    if (tree != null) {
+                        val flat = UiTreeFlattener.flattenInteractive(tree)
+                        matchedNode = flat.firstOrNull { node ->
+                            val textMatches = when {
+                                text == null -> true
+                                matchType == "exact" -> node.text == text
+                                matchType == "regex" -> node.text?.let { Regex(text).containsMatchIn(it) } == true
+                                else -> node.text?.contains(text, ignoreCase = true) == true
+                            }
+                            val resMatches = when {
+                                resId == null -> true
+                                matchType == "exact" -> node.resourceId == resId
+                                else -> node.resourceId?.contains(resId, ignoreCase = true) == true
+                            }
+                            val descMatches = when {
+                                contentDesc == null -> true
+                                matchType == "exact" -> node.description == contentDesc
+                                else -> node.description?.contains(contentDesc, ignoreCase = true) == true
+                            }
+                            val classMatches = when {
+                                className == null -> true
+                                else -> node.className?.contains(className, ignoreCase = true) == true
+                            }
+                            textMatches && resMatches && descMatches && classMatches
+                        }
+                    }
+
+                    if (condition == "present" && matchedNode != null) {
+                        break
+                    } else if (condition == "absent" && matchedNode == null) {
+                        break
+                    }
+
+                    delay(intervalMs)
+                }
+
+                val elapsed = System.currentTimeMillis() - startTime
+                if (condition == "present") {
+                    if (matchedNode != null) {
+                        val cx = matchedNode.bounds.centerX.toFloat()
+                        val cy = matchedNode.bounds.centerY.toFloat()
+                        val extraMsg = if (autoClick) {
+                            val (ok, clickMsg) = InputController.click(cx, cy, matchedNode.packageName, matchedNode.resourceId)
+                            "\nAuto-click at ($cx, $cy): $clickMsg (success=$ok)"
+                        } else ""
+
+                        CallToolResult(
+                            content = listOf(
+                                ContentItem(
+                                    text = "Element found after ${elapsed}ms:\n${matchedNode.toCompactString()}$extraMsg"
+                                )
+                            )
+                        )
+                    } else {
+                        CallToolResult(
+                            content = listOf(
+                                ContentItem(
+                                    text = "Timeout (${timeoutMs}ms) reached. Element not found matching selector (text=$text, id=$resId, desc=$contentDesc, class=$className)"
+                                )
+                            ),
+                            isError = true
+                        )
+                    }
+                } else {
+                    if (matchedNode == null) {
+                        CallToolResult(
+                            content = listOf(
+                                ContentItem(
+                                    text = "Element successfully became absent after ${elapsed}ms."
+                                )
+                            )
+                        )
+                    } else {
+                        CallToolResult(
+                            content = listOf(
+                                ContentItem(
+                                    text = "Timeout (${timeoutMs}ms) reached. Element is still present: ${matchedNode.toCompactString()}"
+                                )
+                            ),
+                            isError = true
+                        )
+                    }
+                }
+            }
+
+            "long_press" -> {
+                val elementId = args["element_id"]?.jsonPrimitive?.intOrNull
+                var x = args["x"]?.jsonPrimitive?.floatOrNull
+                var y = args["y"]?.jsonPrimitive?.floatOrNull
+                val durationMs = (args["duration_ms"]?.jsonPrimitive?.longOrNull ?: 800L).coerceIn(300L, 5000L)
+                var targetPkg: String? = null
+                var targetId: String? = null
+
+                if (elementId != null && lastDumpedTree != null) {
+                    val node = UiTreeFlattener.findNodeById(lastDumpedTree!!, elementId)
+                    if (node != null) {
+                        x = node.bounds.centerX.toFloat()
+                        y = node.bounds.centerY.toFloat()
+                        targetPkg = node.packageName
+                        targetId = node.resourceId
+                    }
+                }
+
+                if (x == null || y == null) {
+                    return CallToolResult(
+                        content = listOf(ContentItem(text = "Please specify (x, y) coordinates or a valid element_id from get_ui_hierarchy")),
+                        isError = true
+                    )
+                }
+
+                val (ok, msg) = InputController.longPress(x, y, durationMs, targetPkg, targetId)
+                CallToolResult(
+                    content = listOf(ContentItem(text = msg)),
+                    isError = !ok
+                )
+            }
+
+            "drag_and_drop" -> {
+                val fromId = args["from_element_id"]?.jsonPrimitive?.intOrNull
+                val toId = args["to_element_id"]?.jsonPrimitive?.intOrNull
+                var x1 = args["x1"]?.jsonPrimitive?.floatOrNull
+                var y1 = args["y1"]?.jsonPrimitive?.floatOrNull
+                var x2 = args["x2"]?.jsonPrimitive?.floatOrNull
+                var y2 = args["y2"]?.jsonPrimitive?.floatOrNull
+                val holdMs = (args["hold_ms"]?.jsonPrimitive?.longOrNull ?: 400L).coerceIn(100L, 2000L)
+                val durationMs = (args["duration_ms"]?.jsonPrimitive?.longOrNull ?: 500L).coerceIn(100L, 5000L)
+
+                if (fromId != null && lastDumpedTree != null) {
+                    val node1 = UiTreeFlattener.findNodeById(lastDumpedTree!!, fromId)
+                    if (node1 != null) {
+                        x1 = node1.bounds.centerX.toFloat()
+                        y1 = node1.bounds.centerY.toFloat()
+                    }
+                }
+                if (toId != null && lastDumpedTree != null) {
+                    val node2 = UiTreeFlattener.findNodeById(lastDumpedTree!!, toId)
+                    if (node2 != null) {
+                        x2 = node2.bounds.centerX.toFloat()
+                        y2 = node2.bounds.centerY.toFloat()
+                    }
+                }
+
+                if (x1 == null || y1 == null || x2 == null || y2 == null) {
+                    return CallToolResult(
+                        content = listOf(ContentItem(text = "Please specify (x1, y1, x2, y2) or valid from_element_id and to_element_id")),
+                        isError = true
+                    )
+                }
+
+                val (ok, msg) = InputController.dragAndDrop(x1, y1, x2, y2, holdMs, durationMs)
+                CallToolResult(
+                    content = listOf(ContentItem(text = msg)),
+                    isError = !ok
+                )
+            }
+
+            "get_notifications" -> {
+                val pkgFilter = args["package_name"]?.jsonPrimitive?.contentOrNull
+                val textFilter = args["filter"]?.jsonPrimitive?.contentOrNull
+                val limit = (args["limit"]?.jsonPrimitive?.intOrNull ?: 20).coerceIn(1, 100)
+                val clear = args["clear"]?.jsonPrimitive?.booleanOrNull ?: false
+
+                val service = McpNotificationListenerService.instance
+                val rawList = if (service != null) {
+                    val active = service.getActiveNotificationsList()
+                    val history = McpNotificationListenerService.notificationHistory.toList()
+                    (active + history).distinctBy { it.key ?: "${it.packageName}:${it.postTime}" }
+                } else {
+                    McpNotificationListenerService.queryNotificationsViaShell()
+                }
+
+                val filtered = rawList.filter { item ->
+                    val pkgMatch = pkgFilter == null || item.packageName.contains(pkgFilter, ignoreCase = true)
+                    val textMatch = textFilter == null ||
+                            (item.title?.contains(textFilter, ignoreCase = true) == true) ||
+                            (item.text?.contains(textFilter, ignoreCase = true) == true) ||
+                            (item.subText?.contains(textFilter, ignoreCase = true) == true)
+                    pkgMatch && textMatch
+                }.take(limit)
+
+                if (clear && service != null) {
+                    filtered.forEach { item ->
+                        item.key?.let { service.clearNotificationByKey(it) }
+                    }
+                }
+
+                val json = jsonConfig.encodeToString(filtered)
+                CallToolResult(
+                    content = listOf(
+                        ContentItem(
+                            text = if (filtered.isEmpty()) {
+                                "No matching notifications found."
+                            } else {
+                                "Found ${filtered.size} notification(s):\n$json"
+                            }
+                        )
+                    )
+                )
+            }
+
+            "wait_for_notification" -> {
+                val pkgFilter = args["package_name"]?.jsonPrimitive?.contentOrNull
+                val textContains = args["text_contains"]?.jsonPrimitive?.contentOrNull
+                val timeoutMs = (args["timeout_ms"]?.jsonPrimitive?.longOrNull ?: 15000L).coerceIn(1000L, 60000L)
+                val clearAfter = args["clear_after_found"]?.jsonPrimitive?.booleanOrNull ?: false
+
+                val service = McpNotificationListenerService.instance
+                val matched: NotificationItem? = if (service != null) {
+                    withTimeoutOrNull(timeoutMs) {
+                        // First check if any recent notification in last 10 seconds already matches
+                        val recentMatch = McpNotificationListenerService.notificationHistory.firstOrNull { item ->
+                            val pkgMatch = pkgFilter == null || item.packageName.contains(pkgFilter, ignoreCase = true)
+                            val textMatch = textContains == null ||
+                                    (item.title?.contains(textContains, ignoreCase = true) == true) ||
+                                    (item.text?.contains(textContains, ignoreCase = true) == true)
+                            pkgMatch && textMatch && (System.currentTimeMillis() - item.postTime < 10000)
+                        }
+                        if (recentMatch != null) {
+                            recentMatch
+                        } else {
+                            McpNotificationListenerService.notificationEvents.first { item ->
+                                val pkgMatch = pkgFilter == null || item.packageName.contains(pkgFilter, ignoreCase = true)
+                                val textMatch = textContains == null ||
+                                        (item.title?.contains(textContains, ignoreCase = true) == true) ||
+                                        (item.text?.contains(textContains, ignoreCase = true) == true)
+                                pkgMatch && textMatch
+                            }
+                        }
+                    }
+                } else {
+                    // Fallback polling via shell
+                    val startTime = System.currentTimeMillis()
+                    var result: NotificationItem? = null
+                    while (System.currentTimeMillis() - startTime < timeoutMs) {
+                        val active = McpNotificationListenerService.queryNotificationsViaShell()
+                        val m = active.firstOrNull { item ->
+                            val pkgMatch = pkgFilter == null || item.packageName.contains(pkgFilter, ignoreCase = true)
+                            val textMatch = textContains == null ||
+                                    (item.title?.contains(textContains, ignoreCase = true) == true) ||
+                                    (item.text?.contains(textContains, ignoreCase = true) == true)
+                            pkgMatch && textMatch
+                        }
+                        if (m != null) {
+                            result = m
+                            break
+                        }
+                        delay(1000)
+                    }
+                    result
+                }
+
+                if (matched != null) {
+                    if (clearAfter && service != null && matched.key != null) {
+                        service.clearNotificationByKey(matched.key)
+                    }
+                    CallToolResult(
+                        content = listOf(
+                            ContentItem(
+                                text = "Notification received:\n${jsonConfig.encodeToString(matched)}"
+                            )
+                        )
+                    )
+                } else {
+                    CallToolResult(
+                        content = listOf(
+                            ContentItem(
+                                text = "Timeout (${timeoutMs}ms) expired waiting for notification (pkg=$pkgFilter, text=$textContains)"
+                            )
+                        ),
+                        isError = true
+                    )
+                }
+            }
+
             else -> CallToolResult(
                 content = listOf(ContentItem(text = "Unknown tool: $name")),
                 isError = true
@@ -1029,12 +1393,28 @@ class McpProtocolHandler(
             Resource(uri = "device://info", name = "Device Information", description = "Current device specs, display, and battery info"),
             Resource(uri = "device://current_app", name = "Current Foreground App", description = "Current focused package and activity"),
             Resource(uri = "device://installed_apps", name = "Installed Applications", description = "List of all user and system installed apps"),
-            Resource(uri = "device://status", name = "Privilege Status", description = "Active status of LSPosed, Shizuku, Root, Accessibility")
+            Resource(uri = "device://status", name = "Privilege Status", description = "Active status of LSPosed, Shizuku, Root, Accessibility, Notifications"),
+            Resource(uri = "device://notifications", name = "Device Notifications", description = "Active and recent system notifications")
         )
     }
 
     private suspend fun readResource(uri: String): ReadResourceResult {
         return when (uri) {
+            "device://notifications" -> {
+                val service = McpNotificationListenerService.instance
+                val rawList = if (service != null) {
+                    val active = service.getActiveNotificationsList()
+                    val history = McpNotificationListenerService.notificationHistory.toList()
+                    (active + history).distinctBy { it.key ?: "${it.packageName}:${it.postTime}" }
+                } else {
+                    McpNotificationListenerService.queryNotificationsViaShell()
+                }
+                ReadResourceResult(
+                    contents = listOf(
+                        ResourceContent(uri = uri, mimeType = "application/json", text = jsonConfig.encodeToString(rawList))
+                    )
+                )
+            }
             "device://info" -> {
                 val info = privilegeManager.getDeviceInfo(context)
                 ReadResourceResult(
@@ -1096,7 +1476,7 @@ class McpProtocolHandler(
                     PromptMessage(
                         role = "user",
                         content = ContentItem(
-                            text = "You are an autonomous Android UI testing agent. Start by calling 'get_ui_hierarchy' and 'capture_screenshot' with annotate_som=true. Use element_id from the compact hierarchy to perform precise 'tap', 'input_text', or 'swipe' operations."
+                            text = "You are an autonomous Android UI testing agent. Start by calling 'get_ui_hierarchy' and 'capture_screenshot' with annotate_som=true. Use element_id from the compact hierarchy to perform precise 'tap', 'long_press', 'input_text', 'swipe', or 'drag_and_drop' operations. When waiting for page loads or asynchronous changes, always prefer 'wait_for_element' (with optional auto_click=true) instead of repeated querying. To capture 2FA SMS codes or alerts, use 'get_notifications' or 'wait_for_notification'."
                         )
                     )
                 )

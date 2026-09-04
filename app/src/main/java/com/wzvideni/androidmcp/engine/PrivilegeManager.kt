@@ -58,7 +58,9 @@ class PrivilegeManager(
             shizukuRunning = ShizukuBridge.isRunning(),
             shizukuAuthorized = ShizukuBridge.hasPermission(),
             rootAvailable = RootBridge.checkRootAsync(),
-            accessibilityActive = McpAccessibilityService.isRunning
+            accessibilityActive = McpAccessibilityService.isRunning,
+            notificationActive = com.wzvideni.androidmcp.notification.McpNotificationListenerService.isRunning ||
+                    com.wzvideni.androidmcp.notification.McpNotificationListenerService.isPermissionGranted(context)
         )
     }
 

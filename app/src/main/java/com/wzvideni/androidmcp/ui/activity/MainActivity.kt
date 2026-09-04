@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Accessibility
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Wifi
@@ -72,6 +73,7 @@ import com.wzvideni.androidmcp.engine.McpAccessibilityService
 import com.wzvideni.androidmcp.engine.PrivilegeManager
 import com.wzvideni.androidmcp.engine.RootBridge
 import com.wzvideni.androidmcp.engine.ShizukuBridge
+import com.wzvideni.androidmcp.notification.McpNotificationListenerService
 import com.wzvideni.androidmcp.server.McpForegroundService
 import com.wzvideni.androidmcp.ui.theme.AndroidMCPTheme
 import kotlinx.coroutines.Dispatchers
@@ -221,6 +223,7 @@ fun McpDashboardScreen(
     var isShizukuActive by remember { mutableStateOf(false) }
     var isRootActive by remember { mutableStateOf(rootBridge.isRootCached()) }
     var isA11yActive by remember { mutableStateOf(McpAccessibilityService.isRunning) }
+    var isNotificationActive by remember { mutableStateOf(false) }
     var localIps by remember { mutableStateOf<List<String>>(emptyList()) }
 
     LaunchedEffect(refreshKey) {
@@ -230,6 +233,7 @@ fun McpDashboardScreen(
             val shizukuPerm = if (shizukuRun) shizukuBridge.hasPermission() else false
             val root = rootBridge.checkRootAsync()
             val a11y = McpAccessibilityService.isRunning
+            val notif = McpNotificationListenerService.isRunning || McpNotificationListenerService.isPermissionGranted(context)
             val ips = privilegeManager.getLocalIpAddresses()
 
             withContext(Dispatchers.Main) {
@@ -238,6 +242,7 @@ fun McpDashboardScreen(
                 isShizukuActive = shizukuPerm
                 isRootActive = root
                 isA11yActive = a11y
+                isNotificationActive = notif
                 localIps = ips
             }
         }
@@ -469,6 +474,20 @@ fun McpDashboardScreen(
                         isActive = isA11yActive,
                         actionLabel = if (!isA11yActive) "去开启" else null,
                         onAction = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                    )
+
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.padding(vertical = 8.dp)
+                    )
+
+                    PrivilegeStatusItem(
+                        icon = Icons.Default.Notifications,
+                        title = "通知监听服务 (验证码与弹窗感知)",
+                        desc = if (isNotificationActive) "已开启：支持短信验证码与系统通知实时拦截" else "未开启：点击右侧按钮前往系统设置授予通知读取权限",
+                        isActive = isNotificationActive,
+                        actionLabel = if (!isNotificationActive) "去授权" else null,
+                        onAction = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
                     )
                 }
             }

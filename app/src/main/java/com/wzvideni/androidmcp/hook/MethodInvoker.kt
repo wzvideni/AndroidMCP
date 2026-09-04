@@ -111,6 +111,20 @@ object MethodInvoker {
         return clicked
     }
 
+    fun longClickViewByIdOrTag(activity: Activity, targetId: String?, viewId: Int?): Boolean {
+        var clicked = false
+        val decorView = activity.window?.decorView ?: return false
+
+        activity.runOnUiThread {
+            val targetView = findView(decorView, targetId, viewId)
+            if (targetView != null) {
+                targetView.isLongClickable = true
+                clicked = targetView.performLongClick()
+            }
+        }
+        return clicked
+    }
+
     private fun findView(root: View, targetId: String?, viewId: Int?): View? {
         if (viewId != null && root.id == viewId) return root
         if (!targetId.isNullOrBlank()) {

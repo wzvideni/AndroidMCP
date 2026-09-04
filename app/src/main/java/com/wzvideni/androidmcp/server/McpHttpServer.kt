@@ -623,6 +623,11 @@ class McpHttpServer(
                                     <option value="hook_call_method">hook_call_method</option>
                                     <option value="hook_set_field">hook_set_field</option>
                                     <option value="hook_get_view_tree">hook_get_view_tree</option>
+                                    <option value="wait_for_element">wait_for_element</option>
+                                    <option value="long_press">long_press</option>
+                                    <option value="drag_and_drop">drag_and_drop</option>
+                                    <option value="get_notifications">get_notifications</option>
+                                    <option value="wait_for_notification">wait_for_notification</option>
                                 </select>
                                 <button class="btn" onclick="runSelectedMcpTool()">🚀 发送 JSON-RPC 调用</button>
                             </div>
@@ -770,7 +775,8 @@ class McpHttpServer(
                             '<span class="badge badge-gray">⚡ ' + (dev.batteryLevel || 0) + '% ' + (dev.isCharging ? '充电中' : '') + '</span>' +
                             '<span class="badge ' + (priv.lsposedActive ? 'badge-green' : 'badge-gray') + '">LSPosed: ' + (priv.lsposedActive ? '已激活' : '未激活') + '</span>' +
                             '<span class="badge ' + (priv.rootAvailable ? 'badge-green' : 'badge-gray') + '">Root: ' + (priv.rootAvailable ? '已授权' : '未授权') + '</span>' +
-                            '<span class="badge ' + (priv.shizukuRunning ? 'badge-green' : 'badge-gray') + '">Shizuku/Sui: ' + (priv.shizukuRunning ? '运行中' : '未运行') + '</span>';
+                            '<span class="badge ' + (priv.shizukuRunning ? 'badge-green' : 'badge-gray') + '">Shizuku/Sui: ' + (priv.shizukuRunning ? '运行中' : '未运行') + '</span>' +
+                            '<span class="badge ' + (priv.notificationActive ? 'badge-green' : 'badge-gray') + '">通知监听: ' + (priv.notificationActive ? '已激活' : '未开启') + '</span>';
                     } catch (e) {
                         console.error('Failed to load device info', e);
                     }
@@ -938,7 +944,12 @@ class McpHttpServer(
                     hook_inspect_activity: { package_name: "com.android.settings" },
                     hook_call_method: { package_name: "com.android.settings", method_name: "toString", params: [] },
                     hook_set_field: { package_name: "com.android.settings", class_name: "MainActivity", field_name: "myField", field_value: "test" },
-                    hook_get_view_tree: { package_name: "com.android.settings" }
+                    hook_get_view_tree: { package_name: "com.android.settings" },
+                    wait_for_element: { text: "设置", timeout_ms: 5000, condition: "present", auto_click: false },
+                    long_press: { x: 360, y: 640, duration_ms: 800 },
+                    drag_and_drop: { x1: 360, y1: 800, x2: 360, y2: 300, hold_ms: 400, duration_ms: 500 },
+                    get_notifications: { limit: 20 },
+                    wait_for_notification: { text_contains: "验证码", timeout_ms: 15000 }
                 };
 
                 function onToolSelected(toolName) {

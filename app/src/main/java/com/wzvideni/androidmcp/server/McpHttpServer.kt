@@ -608,26 +608,31 @@ class McpHttpServer(
                             <div style="display: flex; gap: 8px; margin-bottom: 12px; align-items: center;">
                                 <select id="mcp-tool-select" class="input-box" style="width: 260px;" onchange="onToolSelected(this.value)">
                                     <option value="get_device_info">get_device_info</option>
+                                    <option value="get_activity_stack">get_activity_stack</option>
                                     <option value="get_ui_hierarchy">get_ui_hierarchy</option>
                                     <option value="capture_screenshot">capture_screenshot</option>
                                     <option value="tap">tap</option>
                                     <option value="swipe">swipe</option>
+                                    <option value="long_press">long_press</option>
+                                    <option value="drag_and_drop">drag_and_drop</option>
                                     <option value="input_text">input_text</option>
                                     <option value="press_key">press_key</option>
                                     <option value="launch_app">launch_app</option>
                                     <option value="stop_app">stop_app</option>
                                     <option value="clear_app_data">clear_app_data</option>
+                                    <option value="install_apk">install_apk</option>
+                                    <option value="pull_apk">pull_apk</option>
                                     <option value="execute_shell">execute_shell</option>
                                     <option value="get_recent_logs">get_recent_logs</option>
+                                    <option value="get_notifications">get_notifications</option>
+                                    <option value="wait_for_notification">wait_for_notification</option>
+                                    <option value="wait_for_element">wait_for_element</option>
                                     <option value="hook_inspect_activity">hook_inspect_activity</option>
+                                    <option value="hook_get_fragments">hook_get_fragments</option>
                                     <option value="hook_call_method">hook_call_method</option>
                                     <option value="hook_set_field">hook_set_field</option>
                                     <option value="hook_get_view_tree">hook_get_view_tree</option>
-                                    <option value="wait_for_element">wait_for_element</option>
-                                    <option value="long_press">long_press</option>
-                                    <option value="drag_and_drop">drag_and_drop</option>
-                                    <option value="get_notifications">get_notifications</option>
-                                    <option value="wait_for_notification">wait_for_notification</option>
+                                    <option value="hook_trace_method">hook_trace_method</option>
                                 </select>
                                 <button class="btn" onclick="runSelectedMcpTool()">🚀 发送 JSON-RPC 调用</button>
                             </div>
@@ -930,26 +935,31 @@ class McpHttpServer(
                 // MCP Tool Playground Tab
                 const toolTemplates = {
                     get_device_info: {},
+                    get_activity_stack: { max_tasks: 10 },
                     get_ui_hierarchy: { format: "compact_text" },
                     capture_screenshot: { quality: 80, annotate_som: false },
                     tap: { x: 360, y: 640 },
                     swipe: { x1: 360, y1: 900, x2: 360, y2: 300, duration_ms: 300 },
+                    long_press: { x: 360, y: 640, duration_ms: 800 },
+                    drag_and_drop: { x1: 360, y1: 800, x2: 360, y2: 300, hold_ms: 400, duration_ms: 500 },
                     input_text: { text: "Hello MCP" },
                     press_key: { key: "HOME" },
                     launch_app: { package_name: "com.android.settings" },
                     stop_app: { package_name: "com.android.settings" },
                     clear_app_data: { package_name: "com.android.settings" },
+                    install_apk: { file_path: "/data/local/tmp/app.apk", grant_permissions: true },
+                    pull_apk: { package_name: "com.wzvideni.androidmcp", destination_path: "/sdcard/Download/app.apk" },
                     execute_shell: { command: "id", as_root: true },
                     get_recent_logs: { lines: 50, tag: "AndroidMCP" },
+                    get_notifications: { limit: 20 },
+                    wait_for_notification: { text_contains: "验证码", timeout_ms: 15000 },
+                    wait_for_element: { text: "设置", timeout_ms: 5000, condition: "present", auto_click: false },
                     hook_inspect_activity: { package_name: "com.android.settings" },
+                    hook_get_fragments: { package_name: "com.android.settings" },
                     hook_call_method: { package_name: "com.android.settings", method_name: "toString", params: [] },
                     hook_set_field: { package_name: "com.android.settings", class_name: "MainActivity", field_name: "myField", field_value: "test" },
                     hook_get_view_tree: { package_name: "com.android.settings" },
-                    wait_for_element: { text: "设置", timeout_ms: 5000, condition: "present", auto_click: false },
-                    long_press: { x: 360, y: 640, duration_ms: 800 },
-                    drag_and_drop: { x1: 360, y1: 800, x2: 360, y2: 300, hold_ms: 400, duration_ms: 500 },
-                    get_notifications: { limit: 20 },
-                    wait_for_notification: { text_contains: "验证码", timeout_ms: 15000 }
+                    hook_trace_method: { action: "start", package_name: "com.android.settings", class_name: "com.android.settings.SettingsActivity", method_name: "onCreate", capture_args: true, capture_return: true }
                 };
 
                 function onToolSelected(toolName) {

@@ -545,6 +545,63 @@ class McpProtocolHandler(
                         put("clear_after_found", buildJsonObject { put("type", JsonPrimitive("boolean")); put("description", "Whether to dismiss notification after matched") })
                     }
                 )
+            ),
+            Tool(
+                name = "get_activity_stack",
+                description = "Inspect Android Activity Task stack, listing top resumed activity, focused app, and all active Tasks across displays.",
+                inputSchema = ToolInputSchema()
+            ),
+            Tool(
+                name = "hook_get_fragments",
+                description = "[LSPosed] Extract active AndroidX / framework Fragment hierarchy from current foreground Activity (class names, tags, visibility, states, child fragments).",
+                inputSchema = ToolInputSchema(
+                    properties = buildJsonObject {
+                        put("package_name", buildJsonObject {
+                            put("type", JsonPrimitive("string"))
+                            put("description", JsonPrimitive("Target app package name (defaults to current foreground app if omitted)"))
+                        })
+                    }
+                )
+            ),
+            Tool(
+                name = "hook_trace_method",
+                description = "[LSPosed] Dynamically trace method calls inside hooked app process. Records invocation timestamp, arguments, return value/exception, and duration in a ring buffer.",
+                inputSchema = ToolInputSchema(
+                    properties = buildJsonObject {
+                        put("package_name", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "Target app package name") })
+                        put("class_name", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "Target class name containing the method") })
+                        put("method_name", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "Method name to trace") })
+                        put("action", buildJsonObject {
+                            put("type", JsonPrimitive("string"))
+                            put("description", "Action: 'trace' (default, registers hook), 'query' (retrieves recorded calls), 'clear' (clears logs)")
+                        })
+                    },
+                    required = listOf("package_name", "class_name", "method_name")
+                )
+            ),
+            Tool(
+                name = "install_apk",
+                description = "Silently install an APK package on device via Shizuku or Root.",
+                inputSchema = ToolInputSchema(
+                    properties = buildJsonObject {
+                        put("path", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "File path of the APK on the device (e.g. /data/local/tmp/app.apk)") })
+                        put("reinstall", buildJsonObject { put("type", JsonPrimitive("boolean")); put("description", "Whether to reinstall / keep data (-r), default true") })
+                        put("downgrade", buildJsonObject { put("type", JsonPrimitive("boolean")); put("description", "Whether to allow downgrade (-d), default true") })
+                        put("grant_permissions", buildJsonObject { put("type", JsonPrimitive("boolean")); put("description", "Whether to grant all runtime permissions (-g), default true") })
+                    },
+                    required = listOf("path")
+                )
+            ),
+            Tool(
+                name = "pull_apk",
+                description = "Extract the installed APK file of a package on device, copy to destination path (defaults to /sdcard/Download/<package>.apk), and return path and size.",
+                inputSchema = ToolInputSchema(
+                    properties = buildJsonObject {
+                        put("package_name", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "Package name of the installed app to extract") })
+                        put("dest_path", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "Destination path on device (optional)") })
+                    },
+                    required = listOf("package_name")
+                )
             )
         )
     }
@@ -1379,6 +1436,182 @@ class McpProtocolHandler(
                         isError = true
                     )
                 }
+            }
+
+            "get_activity_stack" -> {
+                val (code, out) = if (ShizukuBridge.hasPermission()) {
+                    ShizukuBridge.exec("dumpsys", "activity", "activities")
+                } else if (RootBridge.isRootAvailable()) {
+                    RootBridge.exec("dumpsys activity activities")
+                } else {
+                    -1 to "Root or Shizuku permission required to inspect Activity stack"
+                }
+
+                if (code != 0 || out.isBlank()) {
+                    CallToolResult(content = listOf(ContentItem(text = "Failed to query Activity stack: $out")), isError = true)
+                } else {
+                    val resumedMatch = Regex("ResumedActivity: ActivityRecord\\{[^}]*?\\s+([a-zA-Z0-9_.]+)/([a-zA-Z0-9_.]+)\\s+t(\\d+)\\}").find(out)
+                    val focusedAppMatch = Regex("mFocusedApp=ActivityRecord\\{[^}]*?\\s+([a-zA-Z0-9_.]+)/([a-zA-Z0-9_.]+)\\s+t(\\d+)\\}").find(out)
+                    val focusedWindowMatch = Regex("mFocusedWindow=Window\\{[^}]*?\\s+([^}]+)\\}").find(out)
+
+                    val taskMatches = Regex("\\* Task\\{([a-f0-9]+)\\s+#(\\d+)\\s+type=([a-zA-Z0-9_]+)(?:\\s+A=[^:]*:([a-zA-Z0-9_.]+))?(?:\\s+I=([a-zA-Z0-9_./]+))?[^}]*?visible=(true|false)[^}]*?mode=([a-zA-Z0-9_]+)").findAll(out)
+
+                    val tasksList = taskMatches.map { m ->
+                        val taskId = m.groupValues[2]
+                        val type = m.groupValues[3]
+                        val affinity = m.groupValues[4].ifBlank { m.groupValues[5] }
+                        val isVisible = m.groupValues[6]
+                        val mode = m.groupValues[7]
+                        buildJsonObject {
+                            put("taskId", JsonPrimitive(taskId))
+                            put("type", JsonPrimitive(type))
+                            put("package", JsonPrimitive(affinity.ifBlank { "unknown" }))
+                            put("visible", JsonPrimitive(isVisible == "true"))
+                            put("mode", JsonPrimitive(mode))
+                        }
+                    }.toList()
+
+                    val resultJson = buildJsonObject {
+                        put("topResumedActivity", buildJsonObject {
+                            put("package", JsonPrimitive(resumedMatch?.groupValues?.get(1) ?: "unknown"))
+                            put("activity", JsonPrimitive(resumedMatch?.groupValues?.get(2) ?: "unknown"))
+                            put("taskId", JsonPrimitive(resumedMatch?.groupValues?.get(3) ?: "unknown"))
+                        })
+                        put("focusedApp", buildJsonObject {
+                            put("package", JsonPrimitive(focusedAppMatch?.groupValues?.get(1) ?: "unknown"))
+                            put("activity", JsonPrimitive(focusedAppMatch?.groupValues?.get(2) ?: "unknown"))
+                        })
+                        put("focusedWindow", JsonPrimitive(focusedWindowMatch?.groupValues?.get(1) ?: "unknown"))
+                        put("activeTasks", buildJsonArray { tasksList.forEach { add(it) } })
+                    }
+
+                    CallToolResult(content = listOf(ContentItem(text = jsonConfig.encodeToString(resultJson))))
+                }
+            }
+
+            "hook_get_fragments" -> {
+                var pkg = args["package_name"]?.jsonPrimitive?.contentOrNull
+                if (pkg.isNullOrBlank()) {
+                    val (fgPkg, _) = privilegeManager.getForegroundApp(context)
+                    pkg = fgPkg
+                }
+                if (pkg.isNullOrBlank()) {
+                    return CallToolResult(content = listOf(ContentItem(text = "Cannot determine target package")), isError = true)
+                }
+
+                val resp = HookClientManager.sendCommand(
+                    pkg,
+                    HookIpcRequest(action = "GET_FRAGMENTS", targetPackage = pkg)
+                )
+
+                if (resp.success) {
+                    val text = "Fragment Hierarchy for $pkg:\n${resp.data?.toString() ?: resp.message}"
+                    CallToolResult(content = listOf(ContentItem(text = text)))
+                } else {
+                    CallToolResult(content = listOf(ContentItem(text = resp.message ?: "Failed to extract Fragments")), isError = true)
+                }
+            }
+
+            "hook_trace_method" -> {
+                val pkg = args["package_name"]?.jsonPrimitive?.content ?: throw IllegalArgumentException("Missing package_name")
+                val cls = args["class_name"]?.jsonPrimitive?.content ?: throw IllegalArgumentException("Missing class_name")
+                val method = args["method_name"]?.jsonPrimitive?.content ?: throw IllegalArgumentException("Missing method_name")
+                val action = args["action"]?.jsonPrimitive?.content ?: "trace"
+
+                val resp = HookClientManager.sendCommand(
+                    pkg,
+                    HookIpcRequest(
+                        action = "TRACE_METHOD",
+                        subAction = action,
+                        targetPackage = pkg,
+                        className = cls,
+                        methodName = method
+                    )
+                )
+
+                val contentText = if (resp.success) {
+                    "${resp.message}\nData:\n${resp.data?.toString() ?: "No records"}"
+                } else {
+                    resp.message ?: "Failed"
+                }
+
+                CallToolResult(content = listOf(ContentItem(text = contentText)), isError = !resp.success)
+            }
+
+            "install_apk" -> {
+                val rawPath = args["path"]?.jsonPrimitive?.contentOrNull
+                    ?: args["file_path"]?.jsonPrimitive?.contentOrNull
+                    ?: throw IllegalArgumentException("Missing path or file_path")
+                val reinstall = args["reinstall"]?.jsonPrimitive?.booleanOrNull ?: true
+                val downgrade = args["downgrade"]?.jsonPrimitive?.booleanOrNull ?: true
+                val grantPerms = args["grant_permissions"]?.jsonPrimitive?.booleanOrNull ?: true
+
+                // SELinux policy: system_server cannot read /sdcard or /storage directly.
+                // Stage the APK in /data/local/tmp if it's located elsewhere.
+                val needsStaging = !rawPath.startsWith("/data/local/tmp/")
+                val stagedPath = if (needsStaging) "/data/local/tmp/_mcp_staged_${System.currentTimeMillis()}.apk" else rawPath
+
+                val flags = StringBuilder()
+                if (reinstall) flags.append(" -r")
+                if (downgrade) flags.append(" -d")
+                if (grantPerms) flags.append(" -g")
+
+                val execCmd = if (needsStaging) {
+                    "cp \"$rawPath\" \"$stagedPath\" && chmod 666 \"$stagedPath\" && pm install$flags \"$stagedPath\"; ret=\$?; rm -f \"$stagedPath\"; exit \$ret"
+                } else {
+                    "pm install$flags \"$rawPath\""
+                }
+
+                val (code, out) = if (ShizukuBridge.hasPermission()) {
+                    ShizukuBridge.exec("sh", "-c", execCmd)
+                } else if (RootBridge.isRootAvailable()) {
+                    RootBridge.exec(execCmd)
+                } else {
+                    -1 to "Shizuku or Root required to silently install APK"
+                }
+
+                CallToolResult(
+                    content = listOf(ContentItem(text = "Command: pm install$flags (code=$code)\nOutput:\n$out")),
+                    isError = code != 0 || out.contains("Failure", ignoreCase = true)
+                )
+            }
+
+            "pull_apk" -> {
+                val pkg = args["package_name"]?.jsonPrimitive?.content ?: throw IllegalArgumentException("Missing package_name")
+                val destPath = args["dest_path"]?.jsonPrimitive?.contentOrNull
+                    ?: args["destination_path"]?.jsonPrimitive?.contentOrNull
+                    ?: "/sdcard/Download/${pkg}_base.apk"
+
+                val (pathCode, pathOut) = if (ShizukuBridge.hasPermission()) {
+                    ShizukuBridge.exec("pm", "path", pkg)
+                } else if (RootBridge.isRootAvailable()) {
+                    RootBridge.exec("pm path $pkg")
+                } else {
+                    -1 to "Shizuku or Root required to pull APK"
+                }
+
+                val sourceApk = pathOut.lines().firstOrNull { it.startsWith("package:") }?.substringAfter("package:")?.trim()
+
+                if (pathCode != 0 || sourceApk.isNullOrBlank()) {
+                    return CallToolResult(
+                        content = listOf(ContentItem(text = "Failed to find APK path for $pkg: $pathOut")),
+                        isError = true
+                    )
+                }
+
+                val copyCmd = "cp \"$sourceApk\" \"$destPath\" && chmod 666 \"$destPath\" && ls -lh \"$destPath\""
+                val (copyCode, copyOut) = if (RootBridge.isRootAvailable()) {
+                    RootBridge.exec(copyCmd)
+                } else if (ShizukuBridge.hasPermission()) {
+                    ShizukuBridge.exec("sh", "-c", copyCmd)
+                } else {
+                    -1 to "No Root or Shizuku available to copy APK"
+                }
+
+                CallToolResult(
+                    content = listOf(ContentItem(text = "Source: $sourceApk\nDestination: $destPath\nResult:\n$copyOut")),
+                    isError = copyCode != 0
+                )
             }
 
             else -> CallToolResult(

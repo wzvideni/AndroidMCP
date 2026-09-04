@@ -12,7 +12,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.encodeToJsonElement
 import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
@@ -236,6 +238,65 @@ object HookIpcServer {
                         success = clicked,
                         message = if (clicked) "Long click dispatched successfully" else "Failed to find or long click view"
                     )
+                }
+            }
+            "GET_FRAGMENTS" -> {
+                if (currentActivity == null) {
+                    HookIpcResponse(success = false, message = "No active Activity in $packageName")
+                } else {
+                    val frags = MethodInvoker.inspectFragments(currentActivity)
+                    val jsonArray = buildJsonArray {
+                        frags.forEach { itemMap ->
+                            add(buildJsonObject {
+                                itemMap.forEach { (k, v) ->
+                                    when (v) {
+                                        is Boolean -> put(k, JsonPrimitive(v))
+                                        is Number -> put(k, JsonPrimitive(v))
+                                        is String -> put(k, JsonPrimitive(v))
+                                        else -> put(k, JsonPrimitive(v?.toString()))
+                                    }
+                                }
+                            })
+                        }
+                    }
+                    HookIpcResponse(
+                        success = true,
+                        message = "Found ${frags.size} Fragment(s) in ${currentActivity.javaClass.name}",
+                        data = jsonArray
+                    )
+                }
+            }
+            "TRACE_METHOD" -> {
+                val clsName = request.className ?: return HookIpcResponse(success = false, message = "Missing className")
+                val mName = request.methodName ?: return HookIpcResponse(success = false, message = "Missing methodName")
+                val sub = request.subAction ?: "trace"
+
+                val clazz = MethodInvoker.loadClass(clsName, currentActivity?.classLoader)
+                    ?: return HookIpcResponse(success = false, message = "Class not found: $clsName")
+
+                when (sub.lowercase()) {
+                    "clear", "reset" -> {
+                        MethodTraceManager.clearTraces()
+                        HookIpcResponse(success = true, message = "Cleared trace logs for $clsName#$mName")
+                    }
+                    "query", "get", "read", "fetch" -> {
+                        val traces = MethodTraceManager.getTraces(clsName, mName)
+                        val jsonElement = jsonConfig.encodeToJsonElement(traces)
+                        HookIpcResponse(
+                            success = true,
+                            message = "Retrieved ${traces.size} trace record(s) for $clsName#$mName",
+                            data = jsonElement
+                        )
+                    }
+                    else -> {
+                        val (ok, msg) = MethodTraceManager.registerTrace(clazz, mName)
+                        val existingTraces = MethodTraceManager.getTraces(clsName, mName)
+                        HookIpcResponse(
+                            success = ok,
+                            message = msg,
+                            data = jsonConfig.encodeToJsonElement(existingTraces)
+                        )
+                    }
                 }
             }
             "CALL_METHOD" -> {

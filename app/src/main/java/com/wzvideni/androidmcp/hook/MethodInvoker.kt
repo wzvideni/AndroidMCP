@@ -293,4 +293,63 @@ object MethodInvoker {
             else -> value
         }
     }
+
+    fun inspectFragments(activity: Activity): List<Map<String, Any?>> {
+        val list = mutableListOf<Map<String, Any?>>()
+        try {
+            val getSupportFm = activity.javaClass.getMethod("getSupportFragmentManager")
+            val fm = getSupportFm.invoke(activity)
+            if (fm != null) {
+                val getFragments = fm.javaClass.getMethod("getFragments")
+                @Suppress("UNCHECKED_CAST")
+                val frags = getFragments.invoke(fm) as? List<Any> ?: emptyList()
+                for (f in frags) {
+                    list.add(fragmentToMap(f))
+                }
+                return list
+            }
+        } catch (_: Throwable) {
+        }
+
+        try {
+            val getFm = activity.javaClass.getMethod("getFragmentManager")
+            val fm = getFm.invoke(activity)
+            if (fm != null) {
+                val getFragments = fm.javaClass.getMethod("getFragments")
+                @Suppress("UNCHECKED_CAST")
+                val frags = getFragments.invoke(fm) as? List<Any> ?: emptyList()
+                for (f in frags) {
+                    list.add(fragmentToMap(f))
+                }
+            }
+        } catch (_: Throwable) {
+        }
+        return list
+    }
+
+    private fun fragmentToMap(frag: Any): Map<String, Any?> {
+        val map = mutableMapOf<String, Any?>()
+        val clazz = frag.javaClass
+        map["className"] = clazz.name
+        try { map["tag"] = clazz.getMethod("getTag").invoke(frag)?.toString() } catch (_: Throwable) {}
+        try { map["id"] = clazz.getMethod("getId").invoke(frag) } catch (_: Throwable) {}
+        try { map["isVisible"] = clazz.getMethod("isVisible").invoke(frag) } catch (_: Throwable) {}
+        try { map["isResumed"] = clazz.getMethod("isResumed").invoke(frag) } catch (_: Throwable) {}
+        try { map["isAdded"] = clazz.getMethod("isAdded").invoke(frag) } catch (_: Throwable) {}
+        try { map["isHidden"] = clazz.getMethod("isHidden").invoke(frag) } catch (_: Throwable) {}
+        try { map["hasView"] = clazz.getMethod("getView").invoke(frag) != null } catch (_: Throwable) {}
+        try {
+            val getChildFm = clazz.getMethod("getChildFragmentManager")
+            val childFm = getChildFm.invoke(frag)
+            if (childFm != null) {
+                val getChildFrags = childFm.javaClass.getMethod("getFragments")
+                @Suppress("UNCHECKED_CAST")
+                val childList = getChildFrags.invoke(childFm) as? List<Any>
+                if (!childList.isNullOrEmpty()) {
+                    map["childFragments"] = childList.map { fragmentToMap(it) }
+                }
+            }
+        } catch (_: Throwable) {}
+        return map
+    }
 }

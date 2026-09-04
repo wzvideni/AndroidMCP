@@ -50,12 +50,13 @@
 
 ---
 
-## 🛠️ MCP 工具清单 (21+ 原生超级工具)
+## 🛠️ MCP 工具清单 (33+ 原生超级工具)
 
 ### 🎯 智能 UI 触控与感知
 | 工具名称 | 参数 | 说明 |
 | :--- | :--- | :--- |
 | `get_ui_hierarchy` | `annotate_som?: boolean` | 智能抓取当前屏幕 UI 树（优先 LSPosed 内存树 -> 其次 A11y -> 兜底 UiAutomator dump），生成 Token 紧凑格式。 |
+| `get_activity_stack` | `max_tasks?: int` | **任务栈与 Activity 深度解析**：提取前台/后台 Task 栈层级、当前聚焦 Activity、任务 ID 及可见性。 |
 | `click_by_selector` | `text?`, `resource_id?`, `content_desc?`, `class_name?`, `match_type?` | **智能选择器点击**：无需计算坐标，直接根据文字或 ID 自动查找目标节点、计算中心点并完成点击。 |
 | `wait_for_element` | `text?`, `resource_id?`, `condition?`, `timeout_ms?`, `auto_click?: boolean` | **智能等待元素**：持续监听 UI 树直至目标元素出现/消失，支持自动直接点击，彻底解决异步加载竞态。 |
 | `capture_screenshot` | `quality?: int`, `annotate_som?: boolean` | 抓取屏幕图像（支持 Base64 返回与 SoM 角标实时绘制）。 |
@@ -72,6 +73,8 @@
 | `hook_dump_sqlite` | `package_name`, `db_name?`, `query?`, `limit?: int` | **私有数据库查询**：直接穿透沙箱读取目标 App 的 SQLite 数据库并以 JSON 表格返回。 |
 | `hook_dump_shared_prefs` | `package_name`, `file_name?`, `key?` | **私有偏好配置解析**：提取并解析目标 App 的 SharedPreferences XML 为结构化 JSON。 |
 | `hook_inspect_activity` | `package_name?` | [LSPosed] 实时分析当前前台 Activity 的类结构、所有属性与已加载组件。 |
+| `hook_get_fragments` | `package_name?` | [LSPosed] **Fragment 层级穿透**：抓取前台 Activity 中活跃的 Fragment 树、Tag、可见性及所属 View。 |
+| `hook_trace_method` | `action: 'start' \| 'get' \| 'stop' \| 'clear'`, `package_name?`, `class_name?`, `method_name?`, `capture_args?`, `capture_return?` | [LSPosed] **动态方法调用追踪**：动态挂载 Hook 捕获入参/返回值/耗时并写入环形缓冲区，支持随时提取与分析。 |
 | `hook_call_method` | `package_name`, `class_name?`, `method_name`, `params?: string[]` | [LSPosed] 在目标 App 内存中反射执行任意 Java/Kotlin 方法。 |
 | `hook_set_field` | `package_name`, `class_name?`, `field_name`, `field_value` | [LSPosed] 在目标 App 内存中动态篡改私有/公开变量值。 |
 | `hook_get_view_tree` | `package_name` | [LSPosed] 直接从目标 App 的 `DecorView` 获取高保真 View 与 Compose 语义树。 |
@@ -79,6 +82,8 @@
 ### 📱 系统与特权控制
 | 工具名称 | 参数 | 说明 |
 | :--- | :--- | :--- |
+| `install_apk` | `file_path`, `grant_permissions?: boolean`, `allow_downgrade?: boolean` | **静默安装 APK**：通过 Shizuku/Root 静默安装 APK，支持全权限预授权与降级安装。 |
+| `pull_apk` | `package_name`, `destination_path` | **APK 提取备份**：定位设备上已安装 App 的 base.apk 路径并复制到指定目录。 |
 | `get_notifications` | `package_name?`, `filter?`, `limit?: int`, `clear?: boolean` | **系统通知读取**：实时抓取与历史过滤短信验证码、第三方 App 推送、状态栏通知。 |
 | `wait_for_notification` | `package_name?`, `text_contains?`, `timeout_ms?: int` | **异步等待通知**：挂起等待新收到的指定短信/通知（专为 2FA/OTP 验证码自动化设计）。 |
 | `manage_clipboard` | `action: 'get' \| 'set'`, `text?: string` | 全系统剪贴板读取与写入，不受前台焦点限制。 |

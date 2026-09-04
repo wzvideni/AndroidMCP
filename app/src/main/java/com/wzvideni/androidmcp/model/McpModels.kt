@@ -301,7 +301,8 @@ data class PrivilegeStatus(
 
 @Serializable
 data class HookIpcRequest(
-    val action: String, // "GET_ACTIVITY_INFO", "GET_VIEW_TREE", "GET_COMPOSE_TREE", "CALL_METHOD", "SET_FIELD", "CLICK_VIEW", "PING"
+    val action: String, // "GET_ACTIVITY_INFO", "GET_VIEW_TREE", "GET_COMPOSE_TREE", "CALL_METHOD", "SET_FIELD", "CLICK_VIEW", "LONG_CLICK_VIEW", "GET_FRAGMENTS", "TRACE_METHOD", "PING"
+    val subAction: String? = null,
     val targetPackage: String? = null,
     val targetActivity: String? = null,
     val targetId: String? = null,

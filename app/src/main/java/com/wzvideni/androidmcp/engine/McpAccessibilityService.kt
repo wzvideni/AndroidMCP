@@ -9,6 +9,8 @@ import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.content.Context
+import android.provider.Settings
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -29,6 +31,34 @@ class McpAccessibilityService : AccessibilityService() {
             private set
 
         val isRunning: Boolean get() = instance != null
+
+        fun isPermissionGranted(context: Context): Boolean {
+            val pkgName = context.packageName
+            val flat = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+            val enabled = Settings.Secure.getInt(context.contentResolver, Settings.Secure.ACCESSIBILITY_ENABLED, 0)
+            return enabled == 1 && flat != null && flat.contains(pkgName)
+        }
+
+        suspend fun autoGrantPermission(context: Context): Boolean {
+            if (isRunning) return true
+            val componentName = "${context.packageName}/${McpAccessibilityService::class.java.name}"
+            val current = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
+            val updated = if (current.isBlank()) componentName else if (!current.contains(componentName)) "$current:$componentName" else current
+
+            if (ShizukuBridge.hasPermission()) {
+                ShizukuBridge.exec("settings", "put", "secure", "enabled_accessibility_services", updated)
+                ShizukuBridge.exec("settings", "put", "secure", "accessibility_enabled", "1")
+                if (isPermissionGranted(context)) return true
+            }
+
+            if (RootBridge.isRootAvailable()) {
+                RootBridge.exec("settings put secure enabled_accessibility_services \"$updated\"")
+                RootBridge.exec("settings put secure accessibility_enabled 1")
+                if (isPermissionGranted(context)) return true
+            }
+
+            return isRunning || isPermissionGranted(context)
+        }
     }
 
     override fun onServiceConnected() {

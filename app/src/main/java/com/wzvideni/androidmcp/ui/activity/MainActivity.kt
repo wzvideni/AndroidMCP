@@ -55,6 +55,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -216,6 +217,7 @@ fun McpDashboardScreen(
     val rootBridge: RootBridge = koinInject()
     val privilegeManager: PrivilegeManager = koinInject()
     val clipboardManager: ClipboardManager = koinInject()
+    val coroutineScope = rememberCoroutineScope()
 
     // State loaded fully asynchronously to prevent any main thread blocking
     var isLsposedActive by remember { mutableStateOf(false) }
@@ -232,7 +234,18 @@ fun McpDashboardScreen(
             val shizukuRun = shizukuBridge.isRunning()
             val shizukuPerm = if (shizukuRun) shizukuBridge.hasPermission() else false
             val root = rootBridge.checkRootAsync()
-            val a11y = McpAccessibilityService.isRunning
+
+            // Automatically grant notification listener and accessibility service if privileged
+            if (shizukuPerm || root) {
+                if (!McpNotificationListenerService.isPermissionGranted(context)) {
+                    McpNotificationListenerService.autoGrantPermission(context)
+                }
+                if (!McpAccessibilityService.isRunning && !McpAccessibilityService.isPermissionGranted(context)) {
+                    McpAccessibilityService.autoGrantPermission(context)
+                }
+            }
+
+            val a11y = McpAccessibilityService.isRunning || McpAccessibilityService.isPermissionGranted(context)
             val notif = McpNotificationListenerService.isRunning || McpNotificationListenerService.isPermissionGranted(context)
             val ips = privilegeManager.getLocalIpAddresses()
 
@@ -467,13 +480,28 @@ fun McpDashboardScreen(
                         modifier = Modifier.padding(vertical = 8.dp)
                     )
 
+                    val canAutoGrant = isShizukuActive || isRootActive
                     PrivilegeStatusItem(
                         icon = Icons.Default.Accessibility,
                         title = "无障碍服务 (UI 兜底方案)",
-                        desc = if (isA11yActive) "已开启：支持无障碍布局树遍历与手势模拟" else "未开启：点击右侧按钮前往系统设置开启服务",
+                        desc = if (isA11yActive) "已开启：支持无障碍布局树遍历与手势模拟" else (if (canAutoGrant) "未开启：已检测到特权，可一键免设自动激活" else "未开启：点击右侧按钮前往系统设置开启服务"),
                         isActive = isA11yActive,
-                        actionLabel = if (!isA11yActive) "去开启" else null,
-                        onAction = { context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                        actionLabel = if (!isA11yActive) (if (canAutoGrant) "一键激活" else "去开启") else null,
+                        onAction = {
+                            if (canAutoGrant) {
+                                coroutineScope.launch {
+                                    val ok = McpAccessibilityService.autoGrantPermission(context)
+                                    if (ok) {
+                                        android.widget.Toast.makeText(context, "无障碍服务已自动激活！", android.widget.Toast.LENGTH_SHORT).show()
+                                        onRefresh()
+                                    } else {
+                                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                                    }
+                                }
+                            } else {
+                                context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                            }
+                        }
                     )
 
                     HorizontalDivider(
@@ -484,10 +512,24 @@ fun McpDashboardScreen(
                     PrivilegeStatusItem(
                         icon = Icons.Default.Notifications,
                         title = "通知监听服务 (验证码与弹窗感知)",
-                        desc = if (isNotificationActive) "已开启：支持短信验证码与系统通知实时拦截" else "未开启：点击右侧按钮前往系统设置授予通知读取权限",
+                        desc = if (isNotificationActive) "已开启：支持短信验证码与系统通知实时拦截" else (if (canAutoGrant) "未开启：已检测到特权，可一键免设自动授权" else "未开启：点击右侧按钮前往系统设置授予通知读取权限"),
                         isActive = isNotificationActive,
-                        actionLabel = if (!isNotificationActive) "去授权" else null,
-                        onAction = { context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+                        actionLabel = if (!isNotificationActive) (if (canAutoGrant) "一键授权" else "去授权") else null,
+                        onAction = {
+                            if (canAutoGrant) {
+                                coroutineScope.launch {
+                                    val ok = McpNotificationListenerService.autoGrantPermission(context)
+                                    if (ok) {
+                                        android.widget.Toast.makeText(context, "通知监听服务已自动授权成功！", android.widget.Toast.LENGTH_SHORT).show()
+                                        onRefresh()
+                                    } else {
+                                        context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                                    }
+                                }
+                            } else {
+                                context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                            }
+                        }
                     )
                 }
             }

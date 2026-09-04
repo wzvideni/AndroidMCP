@@ -435,12 +435,12 @@ class McpProtocolHandler(
             ),
             Tool(
                 name = "system_control",
-                description = "[Root/System] Deep OS hardware & power controls (Wi-Fi, Mobile Data, Airplane Mode, HTTP Proxy, Screen Density/Size, Wake/Sleep, Grant Permissions).",
+                description = "[Root/Shizuku/System] Deep OS hardware & privilege controls (Wi-Fi, Mobile Data, Airplane Mode, HTTP Proxy, Screen Density/Size, Wake/Sleep, Grant Permissions, Auto-grant Notification Listener / Accessibility).",
                 inputSchema = ToolInputSchema(
                     properties = buildJsonObject {
                         put("action", buildJsonObject {
                             put("type", JsonPrimitive("string"))
-                            put("description", "Actions: 'wifi_on', 'wifi_off', 'data_on', 'data_off', 'airplane_on', 'airplane_off', 'set_proxy', 'clear_proxy', 'wake', 'sleep', 'set_screen_density', 'set_screen_size', 'reset_screen', 'grant_all_permissions'")
+                            put("description", "Actions: 'wifi_on', 'wifi_off', 'data_on', 'data_off', 'airplane_on', 'airplane_off', 'set_proxy', 'clear_proxy', 'wake', 'sleep', 'set_screen_density', 'set_screen_size', 'reset_screen', 'grant_all_permissions', 'keep_alive_whitelist', 'grant_notification_listener', 'grant_accessibility_service'")
                         })
                         put("param", buildJsonObject {
                             put("type", JsonPrimitive("string"))
@@ -1135,6 +1135,30 @@ class McpProtocolHandler(
                     "keep_alive_whitelist" -> {
                         val targetPkg = param ?: context.packageName
                         "dumpsys deviceidle whitelist +$targetPkg 2>/dev/null; cmd appops set $targetPkg RUN_IN_BACKGROUND allow 2>/dev/null; echo 'Whitelisted $targetPkg for battery optimization & background execution'"
+                    }
+                    "grant_notification_listener" -> {
+                        val ok = McpNotificationListenerService.autoGrantPermission(context)
+                        return CallToolResult(
+                            content = listOf(
+                                ContentItem(
+                                    text = if (ok) "Successfully granted and activated notification listener service"
+                                    else "Failed to auto-grant notification listener service"
+                                )
+                            ),
+                            isError = !ok
+                        )
+                    }
+                    "grant_accessibility_service" -> {
+                        val ok = McpAccessibilityService.autoGrantPermission(context)
+                        return CallToolResult(
+                            content = listOf(
+                                ContentItem(
+                                    text = if (ok) "Successfully granted and activated accessibility service"
+                                    else "Failed to auto-grant accessibility service"
+                                )
+                            ),
+                            isError = !ok
+                        )
                     }
                     else -> throw IllegalArgumentException("Unknown system_control action: $action")
                 }

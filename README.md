@@ -37,7 +37,7 @@
 - **LSPosed / Xposed 进程内注入**：深入目标应用进程内部，直接反射调用 Java/Kotlin 方法、读写私有 Field 变量、实时抓取原始 View / Jetpack Compose 语义树。
 - **Root 级超级特权**：直接穿透应用沙箱读写 `/data/data/<pkg>/` 私有 SQLite 数据库与 SharedPreferences XML 配置，动态接管系统硬件（Wi-Fi、代理、分辨率、权限）。
 - **Sui / Shizuku 跨进程特权**：无需触发无障碍延迟，高保真分发毫秒级触控、滑动、物理按键及全系统剪贴板读写。
-- **Accessibility 无障碍服务**：免 Root 机型的全自动 UI 节点抓取与手势分发兜底保障。
+- **Accessibility 无障碍与通知监听零干预自动激活**：免 Root 机型的全自动 UI 节点抓取与手势分发兜底保障；当具备 Shizuku 或 Root 特权时，启动服务或一键点击即全自动静默授权与连接无障碍服务及通知监听器，无需用户手动跳转系统深层设置。
 
 ### 2. 👁️ 视觉感知与 Set-of-Mark (SoM) 标注
 - **实时 SoM 目标标号**：截图中自动为每个可交互组件渲染高对比度数字角标（Set-of-Mark），让多模态视觉大模型实现 100% 精准的目标指代。
@@ -93,7 +93,7 @@
 | `get_notifications` | `package_name?`, `filter?`, `limit?: int`, `clear?: boolean` | **系统通知读取**：实时抓取与历史过滤短信验证码、第三方 App 推送、状态栏通知。 |
 | `wait_for_notification` | `package_name?`, `text_contains?`, `timeout_ms?: int` | **异步等待通知**：挂起等待新收到的指定短信/通知（专为 2FA/OTP 验证码自动化设计）。 |
 | `manage_clipboard` | `action: 'get' \| 'set'`, `text?: string` | 全系统剪贴板读取与写入，不受前台焦点限制。 |
-| `system_control` | `action`, `param?` | 深度系统管控（`wifi_on`/`off`, `set_proxy`, `airplane_on`, `set_screen_density`, `grant_all_permissions`, `keep_alive_whitelist` 等）。 |
+| `system_control` | `action`, `param?` | 深度系统管控（`wifi_on`/`off`, `set_proxy`, `airplane_on`, `set_screen_density`, `grant_all_permissions`, `grant_notification_listener`, `grant_accessibility_service`, `keep_alive_whitelist` 等）。 |
 | `system_file_ops` | `action: 'read' \| 'write' \| 'list' \| 'delete'`, `path`, `content?`, `as_base64?: boolean` | 对系统分区与私有沙箱进行任意文件读写和管理。 |
 | `send_intent` | `type`, `action`, `data_uri?`, `package_name?`, `extras?: object` | 向系统发送任意 Activity / Broadcast / Service Intent。 |
 | `execute_shell` | `command: string`, `use_root?: boolean` | 执行 Shell 脚本指令。 |

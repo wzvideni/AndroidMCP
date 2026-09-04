@@ -51,14 +51,28 @@ class PrivilegeManager(
 
     suspend fun getPrivilegeStatus(): PrivilegeStatus = withContext(Dispatchers.IO) {
         val hookedApps = getActiveHookedApps()
+        val shizukuRunning = ShizukuBridge.isRunning()
+        val shizukuAuthorized = ShizukuBridge.hasPermission()
+        val rootAvailable = RootBridge.checkRootAsync()
+
+        // Auto grant notification and accessibility services if privileged
+        if (shizukuAuthorized || rootAvailable) {
+            if (!com.wzvideni.androidmcp.notification.McpNotificationListenerService.isPermissionGranted(context)) {
+                com.wzvideni.androidmcp.notification.McpNotificationListenerService.autoGrantPermission(context)
+            }
+            if (!McpAccessibilityService.isRunning && !McpAccessibilityService.isPermissionGranted(context)) {
+                McpAccessibilityService.autoGrantPermission(context)
+            }
+        }
+
         PrivilegeStatus(
             lsposedActive = YukiHookAPI.Status.isXposedModuleActive || hookedApps.isNotEmpty(),
             hookedAppsCount = if (hookedApps.isNotEmpty()) hookedApps.size else (if (YukiHookAPI.Status.isXposedModuleActive) 1 else 0),
             hookedApps = hookedApps,
-            shizukuRunning = ShizukuBridge.isRunning(),
-            shizukuAuthorized = ShizukuBridge.hasPermission(),
-            rootAvailable = RootBridge.checkRootAsync(),
-            accessibilityActive = McpAccessibilityService.isRunning,
+            shizukuRunning = shizukuRunning,
+            shizukuAuthorized = shizukuAuthorized,
+            rootAvailable = rootAvailable,
+            accessibilityActive = McpAccessibilityService.isRunning || McpAccessibilityService.isPermissionGranted(context),
             notificationActive = com.wzvideni.androidmcp.notification.McpNotificationListenerService.isRunning ||
                     com.wzvideni.androidmcp.notification.McpNotificationListenerService.isPermissionGranted(context)
         )

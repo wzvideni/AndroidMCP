@@ -1,6 +1,7 @@
 package com.wzvideni.androidmcp.notification
 
 import android.app.Notification
+import android.content.ComponentName
 import android.content.Context
 import android.provider.Settings
 import android.service.notification.NotificationListenerService
@@ -32,6 +33,81 @@ class McpNotificationListenerService : NotificationListenerService() {
             val pkgName = context.packageName
             val flat = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners")
             return flat != null && flat.contains(pkgName)
+        }
+
+        /**
+         * Automatically grants NotificationListenerService permission via Shizuku or Root.
+         */
+        suspend fun autoGrantPermission(context: Context): Boolean {
+            val cn = ComponentName(context, McpNotificationListenerService::class.java)
+            val componentName = cn.flattenToString()
+            if (isRunning || isPermissionGranted(context)) {
+                try {
+                    requestRebind(cn)
+                } catch (_: Throwable) {
+                }
+                return true
+            }
+            Log.i(TAG, "Attempting auto-grant for notification listener: $componentName")
+
+            // 1. Try Shizuku
+            if (ShizukuBridge.hasPermission()) {
+                val (code, out) = ShizukuBridge.exec("cmd", "notification", "allow_listener", componentName)
+                Log.d(TAG, "Shizuku allow_listener exitCode=$code, out=$out")
+                if (code == 0 && isPermissionGranted(context)) {
+                    Log.i(TAG, "Notification listener permission auto-granted via Shizuku (cmd notification)")
+                    try {
+                        requestRebind(cn)
+                    } catch (_: Throwable) {
+                    }
+                    return true
+                }
+                val current = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners") ?: ""
+                val updated = if (current.isBlank()) componentName else if (!current.contains(componentName)) "$current:$componentName" else current
+                val (code2, _) = ShizukuBridge.exec("settings", "put", "secure", "enabled_notification_listeners", updated)
+                if (code2 == 0 && isPermissionGranted(context)) {
+                    Log.i(TAG, "Notification listener permission auto-granted via Shizuku (settings put)")
+                    try {
+                        requestRebind(cn)
+                    } catch (_: Throwable) {
+                    }
+                    return true
+                }
+            }
+
+            // 2. Try Root
+            if (RootBridge.isRootAvailable()) {
+                val (code, out) = RootBridge.exec("cmd notification allow_listener $componentName")
+                Log.d(TAG, "Root allow_listener exitCode=$code, out=$out")
+                if (code == 0 && isPermissionGranted(context)) {
+                    Log.i(TAG, "Notification listener permission auto-granted via Root (cmd notification)")
+                    try {
+                        requestRebind(cn)
+                    } catch (_: Throwable) {
+                    }
+                    return true
+                }
+                val current = Settings.Secure.getString(context.contentResolver, "enabled_notification_listeners") ?: ""
+                val updated = if (current.isBlank()) componentName else if (!current.contains(componentName)) "$current:$componentName" else current
+                val (code2, _) = RootBridge.exec("settings put secure enabled_notification_listeners \"$updated\"")
+                if (code2 == 0 && isPermissionGranted(context)) {
+                    Log.i(TAG, "Notification listener permission auto-granted via Root (settings put)")
+                    try {
+                        requestRebind(cn)
+                    } catch (_: Throwable) {
+                    }
+                    return true
+                }
+            }
+
+            val granted = isPermissionGranted(context)
+            if (granted) {
+                try {
+                    requestRebind(cn)
+                } catch (_: Throwable) {
+                }
+            }
+            return granted
         }
 
         fun extractNotificationItem(sbn: StatusBarNotification): NotificationItem {
@@ -97,11 +173,29 @@ class McpNotificationListenerService : NotificationListenerService() {
                     currentTitle = null
                     currentText = null
                 } else if (trimmed.startsWith("android.title=")) {
-                    currentTitle = trimmed.substringAfter("android.title=").trim().removeSurrounding("\"")
+                    currentTitle = trimmed.substringAfter("android.title=")
+                        .trim()
+                        .removeSurrounding("\"")
+                        .removePrefix("String (")
+                        .removeSuffix(")")
+                        .trim()
+                        .removeSurrounding("\"")
                 } else if (trimmed.startsWith("android.text=")) {
-                    currentText = trimmed.substringAfter("android.text=").trim().removeSurrounding("\"")
+                    currentText = trimmed.substringAfter("android.text=")
+                        .trim()
+                        .removeSurrounding("\"")
+                        .removePrefix("String (")
+                        .removeSuffix(")")
+                        .trim()
+                        .removeSurrounding("\"")
                 } else if (trimmed.startsWith("android.bigText=")) {
-                    currentText = trimmed.substringAfter("android.bigText=").trim().removeSurrounding("\"")
+                    currentText = trimmed.substringAfter("android.bigText=")
+                        .trim()
+                        .removeSurrounding("\"")
+                        .removePrefix("String (")
+                        .removeSuffix(")")
+                        .trim()
+                        .removeSurrounding("\"")
                 }
             }
 

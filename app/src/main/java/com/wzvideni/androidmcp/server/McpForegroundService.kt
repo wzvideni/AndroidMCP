@@ -9,17 +9,26 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.wzvideni.androidmcp.R
+import com.wzvideni.androidmcp.engine.McpAccessibilityService
 import com.wzvideni.androidmcp.engine.ShizukuBridge
 import com.wzvideni.androidmcp.mcp.McpProtocolHandler
+import com.wzvideni.androidmcp.notification.McpNotificationListenerService
 import com.wzvideni.androidmcp.ui.activity.MainActivity
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import org.koin.android.ext.android.inject
 
 class McpForegroundService : Service() {
 
     companion object {
+        private const val TAG = "McpForegroundService"
         const val CHANNEL_ID = "mcp_server_channel"
         const val NOTIFICATION_ID = 1001
         const val ACTION_START = "com.wzvideni.androidmcp.ACTION_START"
@@ -48,6 +57,8 @@ class McpForegroundService : Service() {
             context.startService(intent)
         }
     }
+
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /**
      * HTTP 服务器实例，生命周期与当前 Service 绑定，杜绝作为 static 变量造成 Context 泄漏。
@@ -111,10 +122,24 @@ class McpForegroundService : Service() {
                 startForeground(NOTIFICATION_ID, notification)
             }
         } catch (e: Throwable) {
-            android.util.Log.e("McpForegroundService", "startForeground failed: ${e.message}", e)
+            Log.e(TAG, "startForeground failed: ${e.message}", e)
             try {
                 startForeground(NOTIFICATION_ID, notification)
             } catch (_: Throwable) {
+            }
+        }
+
+        // Asynchronously auto-grant notification listener and accessibility service if privileged
+        serviceScope.launch {
+            try {
+                if (!McpNotificationListenerService.isPermissionGranted(applicationContext)) {
+                    McpNotificationListenerService.autoGrantPermission(applicationContext)
+                }
+                if (!McpAccessibilityService.isRunning && !McpAccessibilityService.isPermissionGranted(applicationContext)) {
+                    McpAccessibilityService.autoGrantPermission(applicationContext)
+                }
+            } catch (e: Throwable) {
+                Log.w(TAG, "Auto grant services failed: ${e.message}")
             }
         }
     }
@@ -154,6 +179,7 @@ class McpForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        serviceScope.cancel()
         stopServer()
         super.onDestroy()
     }

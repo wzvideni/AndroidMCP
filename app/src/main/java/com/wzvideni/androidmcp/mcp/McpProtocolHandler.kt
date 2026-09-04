@@ -7,6 +7,7 @@ import android.content.Context
 import android.os.Environment
 import android.util.Log
 import com.wzvideni.androidmcp.engine.InputController
+import com.wzvideni.androidmcp.engine.MacroManager
 import com.wzvideni.androidmcp.engine.McpAccessibilityService
 import com.wzvideni.androidmcp.engine.PrivilegeManager
 import com.wzvideni.androidmcp.engine.RootBridge
@@ -602,6 +603,48 @@ class McpProtocolHandler(
                     },
                     required = listOf("package_name")
                 )
+            ),
+            Tool(
+                name = "run_actions",
+                description = "Execute a batch sequence of UI actions atomically with configurable delay between steps. Supported actions: 'tap' (x, y), 'long_press' (x, y, duration_ms), 'swipe' (x1, y1, x2, y2, duration_ms), 'drag_and_drop' (x1, y1, x2, y2, hold_ms, duration_ms), 'input_text' (text), 'press_key' (key), 'wait' (duration_ms).",
+                inputSchema = ToolInputSchema(
+                    properties = buildJsonObject {
+                        put("actions", buildJsonObject {
+                            put("type", JsonPrimitive("array"))
+                            put("description", JsonPrimitive("Array of action objects: [ { action: 'tap', x: 100, y: 200 }, { action: 'input_text', text: 'hello' } ]"))
+                        })
+                        put("delay_between_ms", buildJsonObject {
+                            put("type", JsonPrimitive("integer"))
+                            put("description", JsonPrimitive("Delay in milliseconds between actions, default 300ms"))
+                        })
+                    },
+                    required = listOf("actions")
+                )
+            ),
+            Tool(
+                name = "manage_macro",
+                description = "Manage and replay automation macros. Supported actions: 'run' (replay a saved macro by name), 'save' (save actions sequence as a named macro), 'list' (list all saved macros), 'delete' (delete a saved macro).",
+                inputSchema = ToolInputSchema(
+                    properties = buildJsonObject {
+                        put("action", buildJsonObject {
+                            put("type", JsonPrimitive("string"))
+                            put("description", JsonPrimitive("Action: 'run', 'save', 'list', 'delete'"))
+                        })
+                        put("macro_name", buildJsonObject {
+                            put("type", JsonPrimitive("string"))
+                            put("description", JsonPrimitive("Identifier name of the macro"))
+                        })
+                        put("actions", buildJsonObject {
+                            put("type", JsonPrimitive("array"))
+                            put("description", JsonPrimitive("Action objects array (required when saving a macro)"))
+                        })
+                        put("delay_between_ms", buildJsonObject {
+                            put("type", JsonPrimitive("integer"))
+                            put("description", JsonPrimitive("Delay in ms between steps during replay, default 300ms"))
+                        })
+                    },
+                    required = listOf("action")
+                )
             )
         )
     }
@@ -718,6 +761,9 @@ class McpProtocolHandler(
                 }
 
                 val (ok, msg) = InputController.click(x, y, targetPkg, targetId)
+                if (ok && MacroManager.isRecording) {
+                    MacroManager.recordAction(buildJsonObject { put("action", JsonPrimitive("tap")); put("x", JsonPrimitive(x)); put("y", JsonPrimitive(y)) })
+                }
                 CallToolResult(
                     content = listOf(ContentItem(text = msg)),
                     isError = !ok
@@ -732,18 +778,32 @@ class McpProtocolHandler(
                 val duration = args["duration_ms"]?.jsonPrimitive?.longOrNull ?: 300L
 
                 val (ok, msg) = InputController.swipe(x1, y1, x2, y2, duration)
+                if (ok && MacroManager.isRecording) {
+                    MacroManager.recordAction(buildJsonObject {
+                        put("action", JsonPrimitive("swipe"))
+                        put("x1", JsonPrimitive(x1)); put("y1", JsonPrimitive(y1))
+                        put("x2", JsonPrimitive(x2)); put("y2", JsonPrimitive(y2))
+                        put("duration_ms", JsonPrimitive(duration))
+                    })
+                }
                 CallToolResult(content = listOf(ContentItem(text = msg)), isError = !ok)
             }
 
             "input_text" -> {
                 val text = args["text"]?.jsonPrimitive?.content ?: ""
                 val (ok, msg) = InputController.inputText(text)
+                if (ok && MacroManager.isRecording) {
+                    MacroManager.recordAction(buildJsonObject { put("action", JsonPrimitive("input_text")); put("text", JsonPrimitive(text)) })
+                }
                 CallToolResult(content = listOf(ContentItem(text = msg)), isError = !ok)
             }
 
             "press_key" -> {
                 val key = args["key"]?.jsonPrimitive?.content ?: ""
                 val (ok, msg) = InputController.pressKey(key)
+                if (ok && MacroManager.isRecording) {
+                    MacroManager.recordAction(buildJsonObject { put("action", JsonPrimitive("press_key")); put("key", JsonPrimitive(key)) })
+                }
                 CallToolResult(content = listOf(ContentItem(text = msg)), isError = !ok)
             }
 
@@ -1072,6 +1132,10 @@ class McpProtocolHandler(
                         val targetPkg = param ?: throw IllegalArgumentException("param (package_name) is required for grant_all_permissions")
                         "pm grant $targetPkg android.permission.READ_EXTERNAL_STORAGE 2>/dev/null; pm grant $targetPkg android.permission.WRITE_EXTERNAL_STORAGE 2>/dev/null; pm grant $targetPkg android.permission.ACCESS_FINE_LOCATION 2>/dev/null; pm grant $targetPkg android.permission.ACCESS_COARSE_LOCATION 2>/dev/null; pm grant $targetPkg android.permission.POST_NOTIFICATIONS 2>/dev/null; pm grant $targetPkg android.permission.CAMERA 2>/dev/null; pm grant $targetPkg android.permission.RECORD_AUDIO 2>/dev/null; echo 'Granted permissions for $targetPkg'"
                     }
+                    "keep_alive_whitelist" -> {
+                        val targetPkg = param ?: context.packageName
+                        "dumpsys deviceidle whitelist +$targetPkg 2>/dev/null; cmd appops set $targetPkg RUN_IN_BACKGROUND allow 2>/dev/null; echo 'Whitelisted $targetPkg for battery optimization & background execution'"
+                    }
                     else -> throw IllegalArgumentException("Unknown system_control action: $action")
                 }
 
@@ -1275,6 +1339,14 @@ class McpProtocolHandler(
                 }
 
                 val (ok, msg) = InputController.longPress(x, y, durationMs, targetPkg, targetId)
+                if (ok && MacroManager.isRecording) {
+                    MacroManager.recordAction(buildJsonObject {
+                        put("action", JsonPrimitive("long_press"))
+                        put("x", JsonPrimitive(x))
+                        put("y", JsonPrimitive(y))
+                        put("duration_ms", JsonPrimitive(durationMs))
+                    })
+                }
                 CallToolResult(
                     content = listOf(ContentItem(text = msg)),
                     isError = !ok
@@ -1314,6 +1386,14 @@ class McpProtocolHandler(
                 }
 
                 val (ok, msg) = InputController.dragAndDrop(x1, y1, x2, y2, holdMs, durationMs)
+                if (ok && MacroManager.isRecording) {
+                    MacroManager.recordAction(buildJsonObject {
+                        put("action", JsonPrimitive("drag_and_drop"))
+                        put("x1", JsonPrimitive(x1)); put("y1", JsonPrimitive(y1))
+                        put("x2", JsonPrimitive(x2)); put("y2", JsonPrimitive(y2))
+                        put("hold_ms", JsonPrimitive(holdMs)); put("duration_ms", JsonPrimitive(durationMs))
+                    })
+                }
                 CallToolResult(
                     content = listOf(ContentItem(text = msg)),
                     isError = !ok
@@ -1612,6 +1692,52 @@ class McpProtocolHandler(
                     content = listOf(ContentItem(text = "Source: $sourceApk\nDestination: $destPath\nResult:\n$copyOut")),
                     isError = copyCode != 0
                 )
+            }
+
+            "run_actions" -> {
+                val actionsJson = args["actions"]?.jsonArray?.mapNotNull { if (it is JsonObject) it else null }
+                    ?: throw IllegalArgumentException("Missing or invalid actions array")
+                val delayMs = args["delay_between_ms"]?.jsonPrimitive?.intOrNull?.toLong() ?: 300L
+
+                val (allOk, report) = MacroManager.executeActions(actionsJson, delayMs)
+                CallToolResult(
+                    content = listOf(ContentItem(text = report)),
+                    isError = !allOk
+                )
+            }
+
+            "manage_macro" -> {
+                val action = args["action"]?.jsonPrimitive?.content ?: "list"
+                val name = args["macro_name"]?.jsonPrimitive?.contentOrNull ?: args["name"]?.jsonPrimitive?.contentOrNull
+                val delayMs = args["delay_between_ms"]?.jsonPrimitive?.intOrNull?.toLong() ?: 300L
+
+                when (action.lowercase()) {
+                    "save" -> {
+                        val macroName = name ?: throw IllegalArgumentException("Missing macro_name for save")
+                        val actionsJson = args["actions"]?.jsonArray?.mapNotNull { if (it is JsonObject) it else null }
+                            ?: throw IllegalArgumentException("Missing actions array for save")
+                        val ok = MacroManager.saveMacro(context, macroName, actionsJson)
+                        CallToolResult(content = listOf(ContentItem(text = if (ok) "Successfully saved macro '$macroName' with ${actionsJson.size} step(s)" else "Failed to save macro")))
+                    }
+                    "run", "replay" -> {
+                        val macroName = name ?: throw IllegalArgumentException("Missing macro_name for run")
+                        val macroActions = MacroManager.getMacro(context, macroName)
+                            ?: return CallToolResult(content = listOf(ContentItem(text = "Macro '$macroName' not found")), isError = true)
+                        val (allOk, report) = MacroManager.executeActions(macroActions, delayMs)
+                        CallToolResult(content = listOf(ContentItem(text = "Executed macro '$macroName':\n$report")), isError = !allOk)
+                    }
+                    "list" -> {
+                        val list = MacroManager.listMacros(context)
+                        val text = if (list.isEmpty()) "No saved macros." else list.entries.joinToString("\n") { "• ${it.key}: ${it.value} step(s)" }
+                        CallToolResult(content = listOf(ContentItem(text = text)))
+                    }
+                    "delete", "remove" -> {
+                        val macroName = name ?: throw IllegalArgumentException("Missing macro_name for delete")
+                        val ok = MacroManager.deleteMacro(context, macroName)
+                        CallToolResult(content = listOf(ContentItem(text = if (ok) "Deleted macro '$macroName'" else "Macro '$macroName' not found")))
+                    }
+                    else -> throw IllegalArgumentException("Unknown manage_macro action: $action")
+                }
             }
 
             else -> CallToolResult(

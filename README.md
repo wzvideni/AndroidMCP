@@ -45,12 +45,12 @@
 
 ### 3. 🖥️ 现代化拟物 Web 控制台
 - 访问 `http://<设备IP>:8080/` 即可直接在电脑浏览器中进行沉浸式远程操作：
-  - **真实拟物手机屏幕镜像**：支持鼠标单击即点、拖动即滑动、实时光标坐标反馈、物理按键悬浮栏。
-  - **5 大超级工作台 Tab**：快捷文本/应用控制、UI 树实时搜索与点击、特权 Shell 终端、MCP 工具在线 Playground、实时 Logcat 日志过滤。
+  - **真实拟物手机屏幕镜像 & 低延迟 MJPEG 实时流**：支持高帧率零延迟实时推流 (`/api/stream`)，鼠标单击即点、拖动即滑动、实时光标坐标反馈、物理按键悬浮栏。
+  - **7 大超级工作台 Tab**：快捷文本/应用控制、UI 树实时搜索与点击、**📁 可视化文件管理**（跨分区浏览、下载、上传、删除）、**🔴 自动化宏录制与回放引擎**、特权 Shell 终端、MCP 工具在线 Playground、实时 Logcat 日志过滤。
 
 ---
 
-## 🛠️ MCP 工具清单 (33+ 原生超级工具)
+## 🛠️ MCP 工具清单 (35+ 原生超级工具)
 
 ### 🎯 智能 UI 触控与感知
 | 工具名称 | 参数 | 说明 |
@@ -67,6 +67,12 @@
 | `input_text` | `text: string` | 输入文本（支持完整 Unicode 与中文字符直接注入）。 |
 | `press_key` | `key: string` | 模拟物理按键（`BACK`, `HOME`, `RECENTS`, `POWER`, `VOLUME_UP`, `VOLUME_DOWN` 等）。 |
 
+### ⚡ 批处理与自动化宏引擎 (Macro Engine)
+| 工具名称 | 参数 | 说明 |
+| :--- | :--- | :--- |
+| `run_actions` | `actions: Array<ActionItem>`, `default_delay_ms?: int` | **原子级动作流批处理**：按序连续执行 `tap`, `long_press`, `swipe`, `drag_and_drop`, `input_text`, `press_key`, `wait`，可自定义延时，极大减少网络往返延迟。 |
+| `manage_macro` | `action: 'save' \| 'get' \| 'list' \| 'delete' \| 'run'`, `name?: string`, `actions?: Array` | **脚本与宏管理引擎**：支持宏持久化保存、按名称调用回放、枚举与删除，结合 Web 控制台实现「录制-保存-调度」一体化。 |
+
 ### 🕵️‍♂️ 深度逆向与数据提取 (Root & LSPosed)
 | 工具名称 | 参数 | 说明 |
 | :--- | :--- | :--- |
@@ -82,12 +88,12 @@
 ### 📱 系统与特权控制
 | 工具名称 | 参数 | 说明 |
 | :--- | :--- | :--- |
-| `install_apk` | `file_path`, `grant_permissions?: boolean`, `allow_downgrade?: boolean` | **静默安装 APK**：通过 Shizuku/Root 静默安装 APK，支持全权限预授权与降级安装。 |
+| `install_apk` | `file_path`, `grant_permissions?: boolean`, `allow_downgrade?: boolean` | **静默安装 APK**：通过 Shizuku/Root 静默安装 APK，支持全权限预授权与降级安装（自动适配 Android 16+ FUSE staging）。 |
 | `pull_apk` | `package_name`, `destination_path` | **APK 提取备份**：定位设备上已安装 App 的 base.apk 路径并复制到指定目录。 |
 | `get_notifications` | `package_name?`, `filter?`, `limit?: int`, `clear?: boolean` | **系统通知读取**：实时抓取与历史过滤短信验证码、第三方 App 推送、状态栏通知。 |
 | `wait_for_notification` | `package_name?`, `text_contains?`, `timeout_ms?: int` | **异步等待通知**：挂起等待新收到的指定短信/通知（专为 2FA/OTP 验证码自动化设计）。 |
 | `manage_clipboard` | `action: 'get' \| 'set'`, `text?: string` | 全系统剪贴板读取与写入，不受前台焦点限制。 |
-| `system_control` | `action`, `param?` | 深度系统管控（`wifi_on`/`off`, `set_proxy`, `airplane_on`, `set_screen_density`, `grant_all_permissions` 等）。 |
+| `system_control` | `action`, `param?` | 深度系统管控（`wifi_on`/`off`, `set_proxy`, `airplane_on`, `set_screen_density`, `grant_all_permissions`, `keep_alive_whitelist` 等）。 |
 | `system_file_ops` | `action: 'read' \| 'write' \| 'list' \| 'delete'`, `path`, `content?`, `as_base64?: boolean` | 对系统分区与私有沙箱进行任意文件读写和管理。 |
 | `send_intent` | `type`, `action`, `data_uri?`, `package_name?`, `extras?: object` | 向系统发送任意 Activity / Broadcast / Service Intent。 |
 | `execute_shell` | `command: string`, `use_root?: boolean` | 执行 Shell 脚本指令。 |
@@ -104,8 +110,16 @@
 http://<手机IP>:8080/
 ```
 
-- 包含与手机 1:1 响应的 **实时画布（Canvas/Mirror）**，支持鼠标手势直接触控与拖拽；
-- 集成 **5 大桌面级控制台 Tab**（快捷控制、UI 布局树检索、Root 终端、MCP 工具调试台、实时 Logcat）。
+- **真实拟物手机屏幕镜像 & MJPEG 实时推流**：支持 15fps 高帧率实时推流，鼠标单击即点、按住拖拽即滑动；
+- **7 大超级工作台 Tab**：
+  - ⚡ **快捷控制**：快速文本注入、常用应用一键拉起、屏幕滑动快捷键；
+  - 🌲 **UI 布局树**：动态提取与过滤 UI 层次，点击直达对应组件；
+  - 📁 **文件管理**：跨分区浏览（`/sdcard/`、`/data/local/tmp/`、`/data/data/<pkg>/` 等）、直接下载、删除与极速上传文件；
+  - 🔴 **自动化宏**：录制用户屏幕操作并持久化保存为宏，一键批量回放与测试动作流 (`run_actions`)；
+  - 💻 **特权终端**：Root/Shell 终端调试与系统监控指令预设；
+  - 🛠️ **MCP 工具台**：全 35 个原生 MCP 工具全参数模板一键调试调用；
+  - 📜 **实时日志**：按 Tag 与关键字即时抓取过滤 Logcat。
+
 
 ---
 

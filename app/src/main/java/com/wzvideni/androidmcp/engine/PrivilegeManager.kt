@@ -113,34 +113,68 @@ class PrivilegeManager(
     }
 
     suspend fun getForegroundApp(ctx: Context = context): Pair<String?, String?> = withContext(Dispatchers.IO) {
-        // Try via Shizuku/Root dumpsys window
+        // 1. Try via Shizuku/Root dumpsys window
         if (ShizukuBridge.hasPermission() || RootBridge.isRootAvailable()) {
             val (code, out) = if (ShizukuBridge.hasPermission()) {
                 ShizukuBridge.exec("dumpsys", "window")
             } else {
                 RootBridge.exec("dumpsys window")
             }
-            if (code == 0) {
-                val mFocused = out.lineSequence().find {
-                    it.contains("mCurrentFocus") || it.contains("mFocusedApp") || it.contains("topResumedActivity")
-                }
-                if (mFocused != null) {
-                    val match = Regex("([a-zA-Z0-9_.]+)/([a-zA-Z0-9_.]+)").find(mFocused)
-                    if (match != null) {
-                        val pkg = match.groupValues[1]
-                        val act = match.groupValues[2]
-                        return@withContext pkg to act
+            if (code == 0 && out.isNotBlank()) {
+                for (line in out.lineSequence()) {
+                    if (line.contains("mCurrentFocus") || line.contains("mFocusedApp") || line.contains("topResumedActivity") || line.contains("mFocusedWindow")) {
+                        // System UI special cases
+                        if (line.contains("NotificationShade") || line.contains("NotificationPanel")) {
+                            return@withContext "com.android.systemui" to "NotificationShade"
+                        }
+                        if (line.contains("StatusBar")) {
+                            return@withContext "com.android.systemui" to "StatusBar"
+                        }
+                        if (line.contains("Keyguard") || line.contains("LockScreen")) {
+                            return@withContext "com.android.systemui" to "Keyguard"
+                        }
+
+                        val match = Regex("([a-zA-Z0-9_.]+)/([a-zA-Z0-9_.]+)").find(line)
+                        if (match != null) {
+                            val pkg = match.groupValues[1]
+                            val act = match.groupValues[2]
+                            return@withContext pkg to act
+                        }
                     }
+                }
+            }
+
+            // Fallback via dumpsys activity activities
+            val (actCode, actOut) = if (ShizukuBridge.hasPermission()) {
+                ShizukuBridge.exec("dumpsys", "activity", "activities")
+            } else {
+                RootBridge.exec("dumpsys activity activities")
+            }
+            if (actCode == 0 && actOut.isNotBlank()) {
+                val resumedMatch = Regex("(?:topResumedActivity|mResumedActivity|ResumedActivity):.*?([a-zA-Z0-9_.]+)/([a-zA-Z0-9_.]+)").find(actOut)
+                if (resumedMatch != null) {
+                    return@withContext resumedMatch.groupValues[1] to resumedMatch.groupValues[2]
                 }
             }
         }
 
-        // Fallback via injected UsageStatsManager
+        // 2. Real-time McpAccessibilityService state
+        val a11y = McpAccessibilityService.instance
+        if (a11y != null) {
+            val root = a11y.rootInActiveWindow
+            val activePkg = root?.packageName?.toString() ?: a11y.currentPackageName
+            val activeCls = a11y.currentActivityName
+            if (!activePkg.isNullOrBlank() && activePkg != "com.wzvideni.androidmcp") {
+                return@withContext activePkg to activeCls
+            }
+        }
+
+        // 3. Fallback via injected UsageStatsManager
         try {
             val usm = usageStatsManager ?: (ctx.getSystemService(Context.USAGE_STATS_SERVICE) as? UsageStatsManager)
             val time = System.currentTimeMillis()
             val stats = usm?.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, time - 1000 * 60, time)
-            val topApp = stats?.maxByOrNull { it.lastTimeUsed }?.packageName
+            val topApp = stats?.filter { it.packageName != "com.wzvideni.androidmcp" }?.maxByOrNull { it.lastTimeUsed }?.packageName
             if (topApp != null) {
                 return@withContext topApp to null
             }
@@ -157,37 +191,70 @@ class PrivilegeManager(
         uri: String? = null
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         try {
-            if (ShizukuBridge.hasPermission()) {
-                val cmd = if (activityName != null) {
-                    listOf("am", "start", "-n", "$packageName/$activityName")
-                } else if (uri != null) {
-                    listOf("am", "start", "-a", "android.intent.action.VIEW", "-d", uri, "-p", packageName)
-                } else {
-                    listOf("monkey", "-p", packageName, "-c", "android.intent.category.LAUNCHER", "1")
-                }
-                val (code, out) = ShizukuBridge.exec(*cmd.toTypedArray())
-                return@withContext (code == 0) to out
-            }
-
-            if (RootBridge.isRootAvailable()) {
-                val cmd = if (activityName != null) "am start -n $packageName/$activityName" else "monkey -p $packageName -c android.intent.category.LAUNCHER 1"
-                val (code, out) = RootBridge.exec(cmd)
-                return@withContext (code == 0) to out
-            }
-
-            // Normal context launch via injected PackageManager
-            val intent = if (uri != null) {
+            // 1. Resolve launch intent via PackageManager
+            val launchIntent = if (uri != null) {
                 Intent(Intent.ACTION_VIEW, uri.toUri()).apply { setPackage(packageName) }
             } else {
                 packageManager.getLaunchIntentForPackage(packageName)
             }
-            if (intent != null) {
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                ctx.startActivity(intent)
-                true to "Launched $packageName"
-            } else {
-                false to "No launch intent found for $packageName"
+
+            fun formatComponent(pkg: String, act: String): String {
+                val cleanAct = if (act.startsWith(".")) "$pkg$act" else act
+                return if (cleanAct.contains("/")) cleanAct else "$pkg/$cleanAct"
             }
+
+            // 2. If Root is available, Root (UID 0) is preferred for launching unexported activities without SecurityException
+            if (RootBridge.isRootAvailable()) {
+                val cmd = if (activityName != null) {
+                    "am start -n ${formatComponent(packageName, activityName)}"
+                } else if (uri != null) {
+                    "am start -a android.intent.action.VIEW -d \"$uri\" -p $packageName"
+                } else if (launchIntent?.component != null) {
+                    "am start -n ${launchIntent.component!!.flattenToShortString()}"
+                } else {
+                    "am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER -p $packageName"
+                }
+                val (code, out) = RootBridge.exec(cmd)
+                if (code == 0 && !out.contains("SecurityException") && !out.contains("Error: Activity class")) {
+                    return@withContext true to (if (out.isNotBlank()) out else "Launched $packageName via Root")
+                }
+            }
+
+            // 3. Try Shizuku (UID 2000 shell)
+            if (ShizukuBridge.hasPermission()) {
+                val cmd = if (activityName != null) {
+                    listOf("am", "start", "-n", formatComponent(packageName, activityName))
+                } else if (uri != null) {
+                    listOf("am", "start", "-a", "android.intent.action.VIEW", "-d", uri, "-p", packageName)
+                } else if (launchIntent?.component != null) {
+                    listOf("am", "start", "-n", launchIntent.component!!.flattenToShortString())
+                } else {
+                    listOf("am", "start", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", "-p", packageName)
+                }
+                val (code, out) = ShizukuBridge.exec(*cmd.toTypedArray())
+                if (code == 0 && !out.contains("SecurityException") && !out.contains("Error:")) {
+                    return@withContext true to (if (out.isNotBlank()) out else "Launched $packageName via Shizuku")
+                }
+            }
+
+            // 4. Try Context startActivity
+            if (launchIntent != null) {
+                launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                ctx.startActivity(launchIntent)
+                return@withContext true to "Launched $packageName via Application Context"
+            }
+
+            // 5. Fallback via monkey
+            if (RootBridge.isRootAvailable()) {
+                val (code, out) = RootBridge.exec("monkey -p $packageName -c android.intent.category.LAUNCHER 1")
+                if (code == 0) return@withContext true to "Launched $packageName via Root monkey"
+            }
+            if (ShizukuBridge.hasPermission()) {
+                val (code, out) = ShizukuBridge.exec("monkey", "-p", packageName, "-c", "android.intent.category.LAUNCHER", "1")
+                if (code == 0) return@withContext true to "Launched $packageName via Shizuku monkey"
+            }
+
+            false to "Failed to launch $packageName: No launch intent found and shell commands failed"
         } catch (e: Throwable) {
             false to "Failed to launch $packageName: ${e.message}"
         }

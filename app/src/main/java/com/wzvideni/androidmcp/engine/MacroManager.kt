@@ -9,6 +9,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
@@ -113,6 +114,8 @@ object MacroManager {
     suspend fun executeActions(
         actions: List<JsonObject>,
         delayBetweenMs: Long = 300L,
+        resolveElementCoords: ((Int) -> Pair<Float, Float>?)? = null,
+        getActivityInfo: (suspend () -> Pair<String?, String?>)? = null,
         onStep: (suspend (Int, JsonObject, Boolean, String) -> Unit)? = null
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         val summary = StringBuilder()
@@ -122,22 +125,47 @@ object MacroManager {
             val type = item["action"]?.jsonPrimitive?.content ?: "tap"
             var success = false
             var message = ""
+            val beforeAct = try { getActivityInfo?.invoke() } catch (_: Throwable) { null }
 
             when (type.lowercase()) {
                 "tap", "click" -> {
-                    val x = item["x"]?.jsonPrimitive?.floatOrNull ?: 0f
-                    val y = item["y"]?.jsonPrimitive?.floatOrNull ?: 0f
-                    val res = InputController.click(x, y)
+                    var x = item["x"]?.jsonPrimitive?.floatOrNull
+                    var y = item["y"]?.jsonPrimitive?.floatOrNull
+                    val elementId = item["element_id"]?.jsonPrimitive?.intOrNull
+                    if ((x == null || y == null) && elementId != null && resolveElementCoords != null) {
+                        val coords = resolveElementCoords(elementId)
+                        if (coords != null) {
+                            x = coords.first
+                            y = coords.second
+                        }
+                    }
+                    val finalX = x ?: 0f
+                    val finalY = y ?: 0f
+                    val targetPkg = item["target_package"]?.jsonPrimitive?.contentOrNull
+                    val targetId = item["target_id"]?.jsonPrimitive?.contentOrNull ?: item["resource_id"]?.jsonPrimitive?.contentOrNull
+                    val res = InputController.click(finalX, finalY, targetPkg, targetId)
                     success = res.first
-                    message = res.second
+                    message = if (res.first) "tap at ($finalX, $finalY)" else res.second
                 }
                 "long_press" -> {
-                    val x = item["x"]?.jsonPrimitive?.floatOrNull ?: 0f
-                    val y = item["y"]?.jsonPrimitive?.floatOrNull ?: 0f
+                    var x = item["x"]?.jsonPrimitive?.floatOrNull
+                    var y = item["y"]?.jsonPrimitive?.floatOrNull
+                    val elementId = item["element_id"]?.jsonPrimitive?.intOrNull
+                    if ((x == null || y == null) && elementId != null && resolveElementCoords != null) {
+                        val coords = resolveElementCoords(elementId)
+                        if (coords != null) {
+                            x = coords.first
+                            y = coords.second
+                        }
+                    }
+                    val finalX = x ?: 0f
+                    val finalY = y ?: 0f
                     val dur = item["duration_ms"]?.jsonPrimitive?.content?.toLongOrNull() ?: 800L
-                    val res = InputController.longPress(x, y, dur)
+                    val targetPkg = item["target_package"]?.jsonPrimitive?.contentOrNull
+                    val targetId = item["target_id"]?.jsonPrimitive?.contentOrNull ?: item["resource_id"]?.jsonPrimitive?.contentOrNull
+                    val res = InputController.longPress(finalX, finalY, dur, targetPkg, targetId)
                     success = res.first
-                    message = res.second
+                    message = if (res.first) "long press at ($finalX, $finalY) for ${dur}ms" else res.second
                 }
                 "swipe" -> {
                     val x1 = item["x1"]?.jsonPrimitive?.floatOrNull ?: 0f
@@ -185,13 +213,22 @@ object MacroManager {
                 }
             }
 
-            if (!success) allSuccess = false
-            summary.append("[${index + 1}/${actions.size}] $type: ${if (success) "OK" else "FAIL ($message)"}\n")
-            onStep?.invoke(index, item, success, message)
-
             if (index < actions.size - 1 && delayBetweenMs > 0) {
                 delay(delayBetweenMs)
             }
+
+            val afterAct = try { getActivityInfo?.invoke() } catch (_: Throwable) { null }
+            val actTransition = if (beforeAct != null && afterAct != null) {
+                if (beforeAct.second != afterAct.second || beforeAct.first != afterAct.first) {
+                    " [Activity: ${beforeAct.first ?: "?"}/${beforeAct.second ?: "?"} -> ${afterAct.first ?: "?"}/${afterAct.second ?: "?"}]"
+                } else {
+                    " [Activity: ${afterAct.first ?: "?"}/${afterAct.second ?: "?"}]"
+                }
+            } else ""
+
+            if (!success) allSuccess = false
+            summary.append("[${index + 1}/${actions.size}] $type: ${if (success) "OK" else "FAIL ($message)"}$actTransition\n")
+            onStep?.invoke(index, item, success, message)
         }
 
         allSuccess to summary.toString().trim()

@@ -7,8 +7,10 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
@@ -59,6 +61,8 @@ class McpForegroundService : Service() {
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     /**
      * HTTP 服务器实例，生命周期与当前 Service 绑定，杜绝作为 static 变量造成 Context 泄漏。
@@ -100,6 +104,26 @@ class McpForegroundService : Service() {
     }
 
     private fun startServer(port: Int) {
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+            if (wakeLock == null) {
+                wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AndroidMCP::ServerWakeLock")?.apply {
+                    setReferenceCounted(false)
+                    acquire(24 * 60 * 60 * 1000L) // 24 hours
+                }
+            }
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+            if (wifiLock == null) {
+                @Suppress("DEPRECATION")
+                wifiLock = wifiManager?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "AndroidMCP::ServerWifiLock")?.apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Failed to acquire WakeLock / WifiLock: ${e.message}")
+        }
+
         if (serverInstance == null) {
             // 通过 Koin factory 创建 McpHttpServer，传入运行时 port 参数
             serverInstance = McpHttpServer(applicationContext, port, protocolHandler).apply {
@@ -145,6 +169,15 @@ class McpForegroundService : Service() {
     }
 
     private fun stopServer() {
+        try {
+            if (wakeLock?.isHeld == true) wakeLock?.release()
+            wakeLock = null
+        } catch (_: Throwable) {}
+        try {
+            if (wifiLock?.isHeld == true) wifiLock?.release()
+            wifiLock = null
+        } catch (_: Throwable) {}
+
         serverInstance?.stop()
         serverInstance = null
         isRunning = false

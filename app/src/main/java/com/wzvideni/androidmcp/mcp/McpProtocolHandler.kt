@@ -649,10 +649,15 @@ class McpProtocolHandler(
         )
     }
 
+    @Volatile
+    var lastDumpDiagnostics: String = ""
+        private set
+
     suspend fun dumpUiTree(): Pair<UiNode?, String> {
         val (currentPkg, _) = privilegeManager.getForegroundApp(context)
         var tree: UiNode? = null
         var source = "unknown"
+        val diags = mutableMapOf<String, String>()
 
         // 1. Try LSPosed hook view tree if foreground app is hooked
         if (!currentPkg.isNullOrBlank()) {
@@ -663,21 +668,43 @@ class McpProtocolHandler(
             if (hookResp.success && hookResp.uiNode != null) {
                 tree = hookResp.uiNode
                 source = "LSPosed (in-process memory tree)"
+                diags["LSPosed"] = "Success"
+            } else {
+                diags["LSPosed"] = hookResp.message ?: "Failed"
             }
+        } else {
+            diags["LSPosed"] = "Skipped (no foreground package)"
         }
 
         // 2. Fallback to Accessibility hierarchy
         if (tree == null) {
             val a11y = McpAccessibilityService.instance
-            tree = a11y?.dumpHierarchy()
-            if (tree != null) source = "AccessibilityService"
+            if (a11y != null) {
+                tree = a11y.dumpHierarchy(retries = 2)
+                if (tree != null) {
+                    source = "AccessibilityService"
+                    diags["Accessibility"] = "Success"
+                } else {
+                    diags["Accessibility"] = "Service active but root and window nodes were null after retries"
+                }
+            } else {
+                diags["Accessibility"] = "Service instance is null (ensure Accessibility Service is running)"
+            }
         }
 
         // 3. Fallback to UiAutomator dump via Root / Shizuku
         if (tree == null) {
-            tree = dumpViaUiAutomator()
-            if (tree != null) source = "UiAutomator (Root/Shizuku dump)"
+            val (uiaTree, uiaDiag) = dumpViaUiAutomatorWithDiag()
+            tree = uiaTree
+            if (tree != null) {
+                source = "UiAutomator (Root/Shizuku dump)"
+                diags["UiAutomator"] = "Success"
+            } else {
+                diags["UiAutomator"] = uiaDiag
+            }
         }
+
+        lastDumpDiagnostics = diags.entries.joinToString("; ") { "${it.key}: ${it.value}" }
 
         if (tree != null) {
             lastDumpedTree = tree
@@ -691,11 +718,21 @@ class McpProtocolHandler(
             "get_ui_hierarchy" -> {
                 val format = args["format"]?.jsonPrimitive?.content ?: "compact_text"
                 val (currentPkg, currentAct) = privilegeManager.getForegroundApp(context)
-                val (tree, source) = dumpUiTree()
+                var (tree, source) = dumpUiTree()
+
+                // If page recently transitioned, verify hierarchy matches foreground app
+                if (currentPkg != null && tree != null && !tree.packageName.isNullOrBlank() && tree.packageName != currentPkg) {
+                    delay(120)
+                    val retry = dumpUiTree()
+                    if (retry.first != null) {
+                        tree = retry.first
+                        source = retry.second
+                    }
+                }
 
                 if (tree == null) {
                     return CallToolResult(
-                        content = listOf(ContentItem(text = "Failed to capture UI hierarchy. Ensure AccessibilityService is enabled, target app is hooked with LSPosed, or Root is granted.")),
+                        content = listOf(ContentItem(text = "Failed to capture UI hierarchy. Backend diagnostics: [$lastDumpDiagnostics]. Ensure AccessibilityService is enabled, target app is hooked with LSPosed, or Root is granted.")),
                         isError = true
                     )
                 }
@@ -719,9 +756,17 @@ class McpProtocolHandler(
                     isError = true
                 )
 
-                if (annotateSom && lastDumpedTree != null) {
-                    val interactiveElements = UiTreeFlattener.flattenInteractive(lastDumpedTree!!)
-                    bitmap = SetOfMarkAnnotator.annotate(bitmap, interactiveElements)
+                if (annotateSom) {
+                    val (currentPkg, _) = privilegeManager.getForegroundApp(context)
+                    var targetTree = lastDumpedTree
+                    if (targetTree == null || (currentPkg != null && targetTree.packageName != null && targetTree.packageName != currentPkg)) {
+                        val (freshTree, _) = dumpUiTree()
+                        if (freshTree != null) targetTree = freshTree
+                    }
+                    if (targetTree != null) {
+                        val interactiveElements = UiTreeFlattener.flattenInteractive(targetTree)
+                        bitmap = SetOfMarkAnnotator.annotate(bitmap, interactiveElements)
+                    }
                 }
 
                 val base64 = ScreenCapturer.toBase64Jpeg(bitmap, quality)
@@ -983,37 +1028,73 @@ class McpProtocolHandler(
 
                 val (tree, _) = dumpUiTree()
                 if (tree == null) {
-                    return CallToolResult(content = listOf(ContentItem(text = "Failed to capture UI tree")), isError = true)
+                    return CallToolResult(
+                        content = listOf(ContentItem(text = "Failed to capture UI tree. Diagnostics: [$lastDumpDiagnostics]")),
+                        isError = true
+                    )
                 }
 
-                val flat = UiTreeFlattener.flattenInteractive(tree)
-                val matched = flat.firstOrNull { node ->
+                val allNodes = mutableListOf<UiNode>()
+                fun collectAll(n: UiNode) {
+                    allNodes.add(n)
+                    for (c in n.children) collectAll(c)
+                }
+                collectAll(tree)
+
+                val matched = allNodes.firstOrNull { node ->
                     val textMatches = when {
                         text == null -> true
-                        matchType == "exact" -> node.text == text
+                        matchType == "exact" -> node.text.equals(text, ignoreCase = false)
                         matchType == "regex" -> node.text?.let { Regex(text).containsMatchIn(it) } == true
                         else -> node.text?.contains(text, ignoreCase = true) == true
                     }
                     val resMatches = when {
                         resId == null -> true
-                        matchType == "exact" -> node.resourceId == resId
-                        else -> node.resourceId?.contains(resId, ignoreCase = true) == true
+                        matchType == "exact" -> {
+                            node.resourceId.equals(resId, ignoreCase = true) ||
+                            node.resourceId?.endsWith(":id/$resId", ignoreCase = true) == true ||
+                            node.resourceId?.endsWith("/$resId", ignoreCase = true) == true ||
+                            node.resourceId?.endsWith(":$resId", ignoreCase = true) == true ||
+                            node.resourceId?.substringAfter(":id/")?.equals(resId, ignoreCase = true) == true ||
+                            node.resourceId?.substringAfterLast('/')?.equals(resId, ignoreCase = true) == true ||
+                            node.resourceId?.substringAfter(':')?.equals(resId, ignoreCase = true) == true
+                        }
+                        matchType == "regex" -> {
+                            node.resourceId?.let { Regex(resId).containsMatchIn(it) } == true
+                        }
+                        else -> {
+                            node.resourceId?.contains(resId, ignoreCase = true) == true ||
+                            node.resourceId?.substringAfter(":id/")?.contains(resId, ignoreCase = true) == true ||
+                            node.resourceId?.substringAfterLast('/')?.contains(resId, ignoreCase = true) == true
+                        }
                     }
                     val descMatches = when {
                         contentDesc == null -> true
-                        matchType == "exact" -> node.description == contentDesc
+                        matchType == "exact" -> node.description.equals(contentDesc, ignoreCase = false)
+                        matchType == "regex" -> node.description?.let { Regex(contentDesc).containsMatchIn(it) } == true
                         else -> node.description?.contains(contentDesc, ignoreCase = true) == true
                     }
                     val classMatches = when {
                         className == null -> true
+                        matchType == "exact" -> node.className.equals(className, ignoreCase = true) || node.className?.endsWith(".$className", ignoreCase = true) == true
                         else -> node.className?.contains(className, ignoreCase = true) == true
                     }
                     textMatches && resMatches && descMatches && classMatches
                 }
 
                 if (matched == null) {
+                    val candidates = allNodes
+                        .filter { !it.resourceId.isNullOrBlank() || !it.text.isNullOrBlank() || !it.description.isNullOrBlank() }
+                        .filter { it.bounds.width > 0 && it.bounds.height > 0 }
+                        .take(20)
+                        .joinToString("\n") { it.toCompactString() }
                     return CallToolResult(
-                        content = listOf(ContentItem(text = "No UI element matched selector criteria: text=$text, resource_id=$resId, desc=$contentDesc")),
+                        content = listOf(
+                            ContentItem(
+                                text = "No UI element matched selector criteria: text=$text, resource_id=$resId, desc=$contentDesc, class_name=$className, match_type=$matchType.\n" +
+                                       "Available candidate elements on screen (${allNodes.size} total nodes, showing top candidates):\n$candidates"
+                            )
+                        ),
                         isError = true
                     )
                 }
@@ -1554,32 +1635,44 @@ class McpProtocolHandler(
                 if (code != 0 || out.isBlank()) {
                     CallToolResult(content = listOf(ContentItem(text = "Failed to query Activity stack: $out")), isError = true)
                 } else {
-                    val resumedMatch = Regex("ResumedActivity: ActivityRecord\\{[^}]*?\\s+([a-zA-Z0-9_.]+)/([a-zA-Z0-9_.]+)\\s+t(\\d+)\\}").find(out)
-                    val focusedAppMatch = Regex("mFocusedApp=ActivityRecord\\{[^}]*?\\s+([a-zA-Z0-9_.]+)/([a-zA-Z0-9_.]+)\\s+t(\\d+)\\}").find(out)
+                    val resumedMatch = Regex("(?:ResumedActivity|topResumedActivity|mResumedActivity)[:=].*?([a-zA-Z0-9_.]+)/([a-zA-Z0-9_.]+)(?:\\s+t(\\d+))?").find(out)
+                    val focusedAppMatch = Regex("mFocusedApp=(?:ActivityRecord\\{[^}]*?\\s+)?([a-zA-Z0-9_.]+)/([a-zA-Z0-9_.]+)").find(out)
                     val focusedWindowMatch = Regex("mFocusedWindow=Window\\{[^}]*?\\s+([^}]+)\\}").find(out)
 
                     val taskMatches = Regex("\\* Task\\{([a-f0-9]+)\\s+#(\\d+)\\s+type=([a-zA-Z0-9_]+)(?:\\s+A=[^:]*:([a-zA-Z0-9_.]+))?(?:\\s+I=([a-zA-Z0-9_./]+))?[^}]*?visible=(true|false)[^}]*?mode=([a-zA-Z0-9_]+)").findAll(out)
 
-                    val tasksList = taskMatches.map { m ->
+                    val seenTaskIds = mutableSetOf<String>()
+                    val tasksList = mutableListOf<JsonObject>()
+                    for (m in taskMatches) {
                         val taskId = m.groupValues[2]
-                        val type = m.groupValues[3]
-                        val affinity = m.groupValues[4].ifBlank { m.groupValues[5] }
-                        val isVisible = m.groupValues[6]
-                        val mode = m.groupValues[7]
-                        buildJsonObject {
-                            put("taskId", JsonPrimitive(taskId))
-                            put("type", JsonPrimitive(type))
-                            put("package", JsonPrimitive(affinity.ifBlank { "unknown" }))
-                            put("visible", JsonPrimitive(isVisible == "true"))
-                            put("mode", JsonPrimitive(mode))
+                        if (seenTaskIds.add(taskId)) {
+                            val type = m.groupValues[3]
+                            val affinity = m.groupValues[4].ifBlank { m.groupValues[5] }
+                            val isVisible = m.groupValues[6]
+                            val mode = m.groupValues[7]
+                            tasksList.add(buildJsonObject {
+                                put("taskId", JsonPrimitive(taskId))
+                                put("type", JsonPrimitive(type))
+                                put("package", JsonPrimitive(affinity.ifBlank { "unknown" }))
+                                put("visible", JsonPrimitive(isVisible == "true"))
+                                put("mode", JsonPrimitive(mode))
+                            })
                         }
-                    }.toList()
+                    }
+
+                    val resumedPkg = resumedMatch?.groupValues?.get(1)
+                        ?: tasksList.firstOrNull { it["visible"]?.jsonPrimitive?.booleanOrNull == true }?.get("package")?.jsonPrimitive?.content
+                        ?: "unknown"
+                    val resumedAct = resumedMatch?.groupValues?.get(2) ?: "unknown"
+                    val resumedTask = resumedMatch?.groupValues?.getOrNull(3)?.ifBlank { null }
+                        ?: tasksList.firstOrNull { it["visible"]?.jsonPrimitive?.booleanOrNull == true }?.get("taskId")?.jsonPrimitive?.content
+                        ?: "unknown"
 
                     val resultJson = buildJsonObject {
                         put("topResumedActivity", buildJsonObject {
-                            put("package", JsonPrimitive(resumedMatch?.groupValues?.get(1) ?: "unknown"))
-                            put("activity", JsonPrimitive(resumedMatch?.groupValues?.get(2) ?: "unknown"))
-                            put("taskId", JsonPrimitive(resumedMatch?.groupValues?.get(3) ?: "unknown"))
+                            put("package", JsonPrimitive(resumedPkg))
+                            put("activity", JsonPrimitive(resumedAct))
+                            put("taskId", JsonPrimitive(resumedTask))
                         })
                         put("focusedApp", buildJsonObject {
                             put("package", JsonPrimitive(focusedAppMatch?.groupValues?.get(1) ?: "unknown"))
@@ -1723,7 +1816,22 @@ class McpProtocolHandler(
                     ?: throw IllegalArgumentException("Missing or invalid actions array")
                 val delayMs = args["delay_between_ms"]?.jsonPrimitive?.intOrNull?.toLong() ?: 300L
 
-                val (allOk, report) = MacroManager.executeActions(actionsJson, delayMs)
+                val resolveCoords: (Int) -> Pair<Float, Float>? = { elemId ->
+                    val tree = lastDumpedTree
+                    if (tree != null) {
+                        val node = UiTreeFlattener.findNodeById(tree, elemId)
+                        if (node != null) {
+                            node.bounds.centerX.toFloat() to node.bounds.centerY.toFloat()
+                        } else null
+                    } else null
+                }
+
+                val (allOk, report) = MacroManager.executeActions(
+                    actions = actionsJson,
+                    delayBetweenMs = delayMs,
+                    resolveElementCoords = resolveCoords,
+                    getActivityInfo = { privilegeManager.getForegroundApp(context) }
+                )
                 CallToolResult(
                     content = listOf(ContentItem(text = report)),
                     isError = !allOk
@@ -1747,7 +1855,23 @@ class McpProtocolHandler(
                         val macroName = name ?: throw IllegalArgumentException("Missing macro_name for run")
                         val macroActions = MacroManager.getMacro(context, macroName)
                             ?: return CallToolResult(content = listOf(ContentItem(text = "Macro '$macroName' not found")), isError = true)
-                        val (allOk, report) = MacroManager.executeActions(macroActions, delayMs)
+
+                        val resolveCoords: (Int) -> Pair<Float, Float>? = { elemId ->
+                            val tree = lastDumpedTree
+                            if (tree != null) {
+                                val node = UiTreeFlattener.findNodeById(tree, elemId)
+                                if (node != null) {
+                                    node.bounds.centerX.toFloat() to node.bounds.centerY.toFloat()
+                                } else null
+                            } else null
+                        }
+
+                        val (allOk, report) = MacroManager.executeActions(
+                            actions = macroActions,
+                            delayBetweenMs = delayMs,
+                            resolveElementCoords = resolveCoords,
+                            getActivityInfo = { privilegeManager.getForegroundApp(context) }
+                        )
                         CallToolResult(content = listOf(ContentItem(text = "Executed macro '$macroName':\n$report")), isError = !allOk)
                     }
                     "list" -> {
@@ -1879,28 +2003,35 @@ class McpProtocolHandler(
         }
     }
 
-    private suspend fun dumpViaUiAutomator(): UiNode? = withContext(Dispatchers.IO) {
+    private suspend fun dumpViaUiAutomator(): UiNode? = dumpViaUiAutomatorWithDiag().first
+
+    private suspend fun dumpViaUiAutomatorWithDiag(): Pair<UiNode?, String> = withContext(Dispatchers.IO) {
         val tmpFile = "/data/local/tmp/mcp_uidump.xml"
-        val (code, _) = if (RootBridge.isRootAvailable()) {
+        val (code, out) = if (RootBridge.isRootAvailable()) {
             RootBridge.exec("rm -f $tmpFile && uiautomator dump $tmpFile")
         } else if (ShizukuBridge.hasPermission()) {
             ShizukuBridge.exec("sh", "-c", "rm -f $tmpFile && uiautomator dump $tmpFile")
         } else {
-            return@withContext null
+            return@withContext null to "Neither Root nor Shizuku permission available"
         }
 
-        if (code != 0) return@withContext null
+        if (code != 0) return@withContext null to "uiautomator dump command failed (exit code $code): $out"
 
         val xmlContent = if (RootBridge.isRootAvailable()) {
-            val (readCode, out) = RootBridge.exec("cat $tmpFile && rm -f $tmpFile")
-            if (readCode == 0) out else null
+            val (readCode, readOut) = RootBridge.exec("cat $tmpFile && rm -f $tmpFile")
+            if (readCode == 0) readOut else null
         } else {
-            val (readCode, out) = ShizukuBridge.exec("cat", tmpFile)
+            val (readCode, readOut) = ShizukuBridge.exec("cat", tmpFile)
             ShizukuBridge.exec("rm", "-f", tmpFile)
-            if (readCode == 0) out else null
-        } ?: return@withContext null
+            if (readCode == 0) readOut else null
+        } ?: return@withContext null to "Failed to read dumped xml from $tmpFile"
 
-        parseUiAutomatorXml(xmlContent)
+        val parsed = parseUiAutomatorXml(xmlContent)
+        if (parsed != null) {
+            parsed to "Success"
+        } else {
+            null to "Failed to parse uiautomator XML content"
+        }
     }
 
     private class MutableUiNode(

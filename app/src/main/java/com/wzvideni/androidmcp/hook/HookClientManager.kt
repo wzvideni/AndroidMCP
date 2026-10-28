@@ -19,7 +19,7 @@ import java.net.Socket
 object HookClientManager {
 
     private const val TAG = "HookClientManager"
-    private const val TIMEOUT_MS = 2500
+    private const val TIMEOUT_MS = 300
 
     suspend fun sendCommand(
         packageName: String,

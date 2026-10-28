@@ -14,11 +14,13 @@ import android.provider.Settings
 import android.view.Display
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import androidx.annotation.RequiresApi
 import com.wzvideni.androidmcp.model.RectBounds
 import com.wzvideni.androidmcp.model.UiNode
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -73,21 +75,51 @@ class McpAccessibilityService : AccessibilityService() {
         Log.i(TAG, "McpAccessibilityService destroyed")
     }
 
+    @Volatile
+    var currentPackageName: String? = null
+        private set
+
+    @Volatile
+    var currentActivityName: String? = null
+        private set
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // Can be used to listen for window changes or notifications
+        if (event == null) return
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                val pkg = event.packageName?.toString()
+                val cls = event.className?.toString()
+                if (!pkg.isNullOrBlank()) {
+                    currentPackageName = pkg
+                }
+                if (!cls.isNullOrBlank() && !cls.startsWith("android.view.") && !cls.startsWith("android.widget.")) {
+                    currentActivityName = cls
+                }
+            }
+        }
     }
 
     override fun onInterrupt() {
         Log.w(TAG, "McpAccessibilityService interrupted")
     }
 
-    fun dumpHierarchy(): UiNode? {
-        val root = rootInActiveWindow
-            ?: windows.firstOrNull { it.isActive }?.root
-            ?: windows.firstOrNull()?.root
-            ?: return null
-        val idCounter = AtomicInteger(1)
-        return traverseNode(root, idCounter)
+    suspend fun dumpHierarchy(retries: Int = 2): UiNode? {
+        for (attempt in 0..retries) {
+            val root = rootInActiveWindow
+                ?: windows.firstOrNull { it.isFocused }?.root
+                ?: windows.firstOrNull { it.isActive }?.root
+                ?: windows.firstOrNull { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }?.root
+                ?: windows.firstOrNull { it.root != null }?.root
+
+            if (root != null) {
+                val idCounter = AtomicInteger(1)
+                return traverseNode(root, idCounter)
+            }
+            if (attempt < retries) {
+                delay(80)
+            }
+        }
+        return null
     }
 
     private fun traverseNode(node: AccessibilityNodeInfo, idCounter: AtomicInteger): UiNode {
@@ -98,7 +130,7 @@ class McpAccessibilityService : AccessibilityService() {
         val childrenList = mutableListOf<UiNode>()
         for (i in 0 until node.childCount) {
             val child = node.getChild(i)
-            if (child != null && child.isVisibleToUser) {
+            if (child != null) {
                 childrenList.add(traverseNode(child, idCounter))
             }
         }

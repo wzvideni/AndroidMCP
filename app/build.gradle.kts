@@ -56,7 +56,9 @@ android {
                 keystoreProperties.load(FileInputStream(keystorePropertiesFile))
                 keyAlias = keystoreProperties["keyAlias"] as String
                 keyPassword = keystoreProperties["keyPassword"] as String
-                storeFile = rootProject.file(keystoreProperties["storeFile"] as String)
+                val rawStoreFile = keystoreProperties["storeFile"] as String
+                val candidate = rootProject.file(rawStoreFile)
+                storeFile = if (candidate.exists()) candidate else rootProject.file(File(rawStoreFile).name)
                 storePassword = keystoreProperties["storePassword"] as String
             }
             enableV1Signing = false

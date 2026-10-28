@@ -14,7 +14,9 @@ import rikka.shizuku.Shizuku
 import rikka.shizuku.ShizukuBinderWrapper
 import rikka.shizuku.SystemServiceHelper
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.lsposed.hiddenapibypass.HiddenApiBypass
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -72,7 +74,9 @@ object ShizukuBridge {
         }
     }
 
-    suspend fun exec(vararg command: String): Pair<Int, String> = withContext(Dispatchers.IO) {
+    suspend fun exec(vararg command: String): Pair<Int, String> = execWithTimeout(10000L, *command)
+
+    suspend fun execWithTimeout(timeoutMs: Long, vararg command: String): Pair<Int, String> = withContext(Dispatchers.IO) {
         if (!isRunning() || !hasPermission()) {
             return@withContext -1 to "Shizuku is not running or permission not granted"
         }
@@ -86,19 +90,29 @@ object ShizukuBridge {
             newProcessMethod.isAccessible = true
             val process = newProcessMethod.invoke(null, command, null, null) as Process
 
-            val reader = BufferedReader(InputStreamReader(process.inputStream))
-            val errorReader = BufferedReader(InputStreamReader(process.errorStream))
+            val result = withTimeoutOrNull(timeoutMs) {
+                val outDeferred = async(Dispatchers.IO) {
+                    process.inputStream.bufferedReader().use { it.readText() }
+                }
+                val errDeferred = async(Dispatchers.IO) {
+                    process.errorStream.bufferedReader().use { it.readText() }
+                }
+                val out = outDeferred.await()
+                val err = errDeferred.await()
+                val exitCode = process.waitFor()
+                val full = if (err.isNotBlank()) "$out\n$err".trim() else out.trim()
+                exitCode to full
+            }
 
-            val output = StringBuilder()
-            var line: String?
-            while (reader.readLine().also { line = it } != null) {
-                output.append(line).append("\n")
+            if (result != null) {
+                result
+            } else {
+                try {
+                    process.destroy()
+                } catch (_: Throwable) {
+                }
+                -1 to "Shizuku command timed out after ${timeoutMs}ms: ${command.joinToString(" ")}"
             }
-            while (errorReader.readLine().also { line = it } != null) {
-                output.append(line).append("\n")
-            }
-            val exitCode = process.waitFor()
-            exitCode to output.toString().trim()
         } catch (e: Throwable) {
             -1 to (e.message ?: "Unknown Shizuku exec error")
         }
@@ -136,9 +150,14 @@ object ShizukuBridge {
             )
             newProcessMethod.isAccessible = true
             val process = newProcessMethod.invoke(null, arrayOf("screencap", "-p"), null, null) as Process
-            val bytes = process.inputStream.readBytes()
-            process.waitFor()
-            if (bytes.isNotEmpty()) bytes else null
+            withTimeoutOrNull(5000L) {
+                val bytes = process.inputStream.readBytes()
+                process.waitFor()
+                if (bytes.isNotEmpty()) bytes else null
+            } ?: run {
+                try { process.destroy() } catch (_: Throwable) {}
+                null
+            }
         } catch (e: Throwable) {
             Log.e(TAG, "Failed to capture screenshot via Shizuku: ${e.message}")
             null

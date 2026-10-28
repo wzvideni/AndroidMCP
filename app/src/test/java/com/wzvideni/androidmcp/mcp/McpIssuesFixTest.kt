@@ -141,4 +141,45 @@ class McpIssuesFixTest {
         assertTrue(ok)
         assertTrue(report.contains("OldActivity -> com.example/NewActivity"))
     }
+
+    @Test
+    fun testWaitForElementNodeMatching() {
+        val root = UiNode(
+            id = 0,
+            className = "android.widget.FrameLayout",
+            bounds = RectBounds(0, 0, 1080, 1920),
+            children = listOf(
+                UiNode(
+                    id = 1,
+                    resourceId = "com.wzvideni.scanplus:id/button_scan5",
+                    className = "android.widget.Button",
+                    text = "Scan",
+                    clickable = true,
+                    bounds = RectBounds(100, 200, 400, 300)
+                )
+            )
+        )
+
+        val allNodes = mutableListOf<UiNode>()
+        fun collectAll(n: UiNode) {
+            allNodes.add(n)
+            for (c in n.children) collectAll(c)
+        }
+        collectAll(root)
+
+        val resId = "button_scan5"
+        val matched = allNodes.firstOrNull { node ->
+            node.resourceId.equals(resId, ignoreCase = true) ||
+            node.resourceId?.endsWith(":id/$resId", ignoreCase = true) == true ||
+            node.resourceId?.endsWith("/$resId", ignoreCase = true) == true ||
+            node.resourceId?.endsWith(":$resId", ignoreCase = true) == true ||
+            node.resourceId?.substringAfter(":id/")?.equals(resId, ignoreCase = true) == true ||
+            node.resourceId?.substringAfterLast('/')?.equals(resId, ignoreCase = true) == true ||
+            node.resourceId?.substringAfter(':')?.equals(resId, ignoreCase = true) == true
+        }
+
+        assertNotNull("wait_for_element should match short resource_id", matched)
+        assertEquals("com.wzvideni.scanplus:id/button_scan5", matched?.resourceId)
+        assertEquals(1, matched?.id)
+    }
 }

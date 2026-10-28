@@ -336,6 +336,7 @@ class McpHttpServer(
                 call.respond(HttpStatusCode.Accepted)
             } else {
                 // Direct HTTP transport: respond with JSON body directly
+                call.response.headers.append(HttpHeaders.Connection, "keep-alive")
                 call.respondText(respJson, ContentType.Application.Json, HttpStatusCode.OK)
             }
         } catch (e: Throwable) {

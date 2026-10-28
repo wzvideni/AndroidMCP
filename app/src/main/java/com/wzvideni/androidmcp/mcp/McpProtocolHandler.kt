@@ -653,14 +653,14 @@ class McpProtocolHandler(
     var lastDumpDiagnostics: String = ""
         private set
 
-    suspend fun dumpUiTree(): Pair<UiNode?, String> {
+    suspend fun dumpUiTree(allowHeavyFallback: Boolean = true, skipLsposed: Boolean = false): Pair<UiNode?, String> {
         val (currentPkg, _) = privilegeManager.getForegroundApp(context)
         var tree: UiNode? = null
         var source = "unknown"
         val diags = mutableMapOf<String, String>()
 
         // 1. Try LSPosed hook view tree if foreground app is hooked
-        if (!currentPkg.isNullOrBlank()) {
+        if (!skipLsposed && !currentPkg.isNullOrBlank()) {
             val hookResp = HookClientManager.sendCommand(
                 currentPkg,
                 HookIpcRequest(action = "GET_VIEW_TREE", targetPackage = currentPkg)
@@ -672,6 +672,8 @@ class McpProtocolHandler(
             } else {
                 diags["LSPosed"] = hookResp.message ?: "Failed"
             }
+        } else if (skipLsposed) {
+            diags["LSPosed"] = "Skipped (polling optimization)"
         } else {
             diags["LSPosed"] = "Skipped (no foreground package)"
         }
@@ -680,20 +682,20 @@ class McpProtocolHandler(
         if (tree == null) {
             val a11y = McpAccessibilityService.instance
             if (a11y != null) {
-                tree = a11y.dumpHierarchy(retries = 2)
+                tree = a11y.dumpHierarchy(retries = if (allowHeavyFallback) 2 else 0)
                 if (tree != null) {
                     source = "AccessibilityService"
                     diags["Accessibility"] = "Success"
                 } else {
-                    diags["Accessibility"] = "Service active but root and window nodes were null after retries"
+                    diags["Accessibility"] = "Service active but root and window nodes were null"
                 }
             } else {
                 diags["Accessibility"] = "Service instance is null (ensure Accessibility Service is running)"
             }
         }
 
-        // 3. Fallback to UiAutomator dump via Root / Shizuku
-        if (tree == null) {
+        // 3. Fallback to UiAutomator dump via Root / Shizuku ONLY if allowed
+        if (tree == null && allowHeavyFallback) {
             val (uiaTree, uiaDiag) = dumpViaUiAutomatorWithDiag()
             tree = uiaTree
             if (tree != null) {
@@ -1330,43 +1332,76 @@ class McpProtocolHandler(
 
                 val startTime = System.currentTimeMillis()
                 var matchedNode: UiNode? = null
+                var attempt = 0
+                var lsposedFailedOnce = false
 
                 while (System.currentTimeMillis() - startTime < timeoutMs) {
-                    val (tree, _) = dumpUiTree()
+                    attempt++
+                    // For polling, allow heavy UiAutomator fallback only when Accessibility is unavailable and on first/final attempt
+                    val allowHeavy = (McpAccessibilityService.instance == null && (attempt <= 1 || (System.currentTimeMillis() - startTime + intervalMs >= timeoutMs)))
+                    val (tree, _) = dumpUiTree(allowHeavyFallback = allowHeavy, skipLsposed = lsposedFailedOnce)
+
                     if (tree != null) {
-                        val flat = UiTreeFlattener.flattenInteractive(tree)
-                        matchedNode = flat.firstOrNull { node ->
+                        val allNodes = mutableListOf<UiNode>()
+                        fun collectAll(n: UiNode) {
+                            allNodes.add(n)
+                            for (c in n.children) collectAll(c)
+                        }
+                        collectAll(tree)
+
+                        matchedNode = allNodes.firstOrNull { node ->
                             val textMatches = when {
                                 text == null -> true
-                                matchType == "exact" -> node.text == text
+                                matchType == "exact" -> node.text.equals(text, ignoreCase = false)
                                 matchType == "regex" -> node.text?.let { Regex(text).containsMatchIn(it) } == true
                                 else -> node.text?.contains(text, ignoreCase = true) == true
                             }
                             val resMatches = when {
                                 resId == null -> true
-                                matchType == "exact" -> node.resourceId == resId
-                                else -> node.resourceId?.contains(resId, ignoreCase = true) == true
+                                matchType == "exact" -> {
+                                    node.resourceId.equals(resId, ignoreCase = true) ||
+                                    node.resourceId?.endsWith(":id/$resId", ignoreCase = true) == true ||
+                                    node.resourceId?.endsWith("/$resId", ignoreCase = true) == true ||
+                                    node.resourceId?.endsWith(":$resId", ignoreCase = true) == true ||
+                                    node.resourceId?.substringAfter(":id/")?.equals(resId, ignoreCase = true) == true ||
+                                    node.resourceId?.substringAfterLast('/')?.equals(resId, ignoreCase = true) == true ||
+                                    node.resourceId?.substringAfter(':')?.equals(resId, ignoreCase = true) == true
+                                }
+                                matchType == "regex" -> {
+                                    node.resourceId?.let { Regex(resId).containsMatchIn(it) } == true
+                                }
+                                else -> {
+                                    node.resourceId?.contains(resId, ignoreCase = true) == true ||
+                                    node.resourceId?.substringAfter(":id/")?.contains(resId, ignoreCase = true) == true ||
+                                    node.resourceId?.substringAfterLast('/')?.contains(resId, ignoreCase = true) == true
+                                }
                             }
                             val descMatches = when {
                                 contentDesc == null -> true
-                                matchType == "exact" -> node.description == contentDesc
+                                matchType == "exact" -> node.description.equals(contentDesc, ignoreCase = false)
+                                matchType == "regex" -> node.description?.let { Regex(contentDesc).containsMatchIn(it) } == true
                                 else -> node.description?.contains(contentDesc, ignoreCase = true) == true
                             }
                             val classMatches = when {
                                 className == null -> true
+                                matchType == "exact" -> node.className.equals(className, ignoreCase = true) || node.className?.endsWith(".$className", ignoreCase = true) == true
                                 else -> node.className?.contains(className, ignoreCase = true) == true
                             }
                             textMatches && resMatches && descMatches && classMatches
                         }
+
+                        if (condition == "present" && matchedNode != null) {
+                            break
+                        } else if (condition == "absent" && matchedNode == null) {
+                            break
+                        }
+                    } else {
+                        lsposedFailedOnce = true
                     }
 
-                    if (condition == "present" && matchedNode != null) {
-                        break
-                    } else if (condition == "absent" && matchedNode == null) {
-                        break
-                    }
-
-                    delay(intervalMs)
+                    val remaining = timeoutMs - (System.currentTimeMillis() - startTime)
+                    if (remaining <= 0) break
+                    delay(intervalMs.coerceAtMost(remaining))
                 }
 
                 val elapsed = System.currentTimeMillis() - startTime

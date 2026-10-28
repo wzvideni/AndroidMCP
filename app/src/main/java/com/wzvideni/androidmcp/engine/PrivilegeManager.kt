@@ -113,7 +113,18 @@ class PrivilegeManager(
     }
 
     suspend fun getForegroundApp(ctx: Context = context): Pair<String?, String?> = withContext(Dispatchers.IO) {
-        // 1. Try via Shizuku/Root dumpsys window
+        // 1. Real-time McpAccessibilityService state (fast path: <1ms, avoids heavy shell dumpsys)
+        val a11y = McpAccessibilityService.instance
+        if (a11y != null) {
+            val root = a11y.rootInActiveWindow
+            val activePkg = root?.packageName?.toString() ?: a11y.currentPackageName
+            val activeCls = a11y.currentActivityName
+            if (!activePkg.isNullOrBlank()) {
+                return@withContext activePkg to activeCls
+            }
+        }
+
+        // 2. Try via Shizuku/Root dumpsys window
         if (ShizukuBridge.hasPermission() || RootBridge.isRootAvailable()) {
             val (code, out) = if (ShizukuBridge.hasPermission()) {
                 ShizukuBridge.exec("dumpsys", "window")
@@ -155,17 +166,6 @@ class PrivilegeManager(
                 if (resumedMatch != null) {
                     return@withContext resumedMatch.groupValues[1] to resumedMatch.groupValues[2]
                 }
-            }
-        }
-
-        // 2. Real-time McpAccessibilityService state
-        val a11y = McpAccessibilityService.instance
-        if (a11y != null) {
-            val root = a11y.rootInActiveWindow
-            val activePkg = root?.packageName?.toString() ?: a11y.currentPackageName
-            val activeCls = a11y.currentActivityName
-            if (!activePkg.isNullOrBlank() && activePkg != "com.wzvideni.androidmcp") {
-                return@withContext activePkg to activeCls
             }
         }
 

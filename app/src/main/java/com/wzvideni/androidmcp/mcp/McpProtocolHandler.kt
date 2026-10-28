@@ -39,9 +39,11 @@ import com.wzvideni.androidmcp.notification.McpNotificationListenerService
 import com.wzvideni.androidmcp.vision.ScreenCapturer
 import com.wzvideni.androidmcp.vision.SetOfMarkAnnotator
 import com.wzvideni.androidmcp.vision.UiTreeFlattener
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
@@ -653,8 +655,12 @@ class McpProtocolHandler(
     var lastDumpDiagnostics: String = ""
         private set
 
-    suspend fun dumpUiTree(allowHeavyFallback: Boolean = true, skipLsposed: Boolean = false): Pair<UiNode?, String> {
-        val (currentPkg, _) = privilegeManager.getForegroundApp(context)
+    suspend fun dumpUiTree(
+        targetPackage: String? = null,
+        allowHeavyFallback: Boolean = true,
+        skipLsposed: Boolean = false
+    ): Pair<UiNode?, String> {
+        val currentPkg = targetPackage ?: privilegeManager.getForegroundApp(context).first
         var tree: UiNode? = null
         var source = "unknown"
         val diags = mutableMapOf<String, String>()
@@ -691,6 +697,13 @@ class McpProtocolHandler(
                 }
             } else {
                 diags["Accessibility"] = "Service instance is null (ensure Accessibility Service is running)"
+                // Background trigger auto-rebind if service got disconnected after an APK update
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        McpAccessibilityService.autoGrantPermission(context)
+                    } catch (_: Throwable) {
+                    }
+                }
             }
         }
 
@@ -720,12 +733,13 @@ class McpProtocolHandler(
             "get_ui_hierarchy" -> {
                 val format = args["format"]?.jsonPrimitive?.content ?: "compact_text"
                 val (currentPkg, currentAct) = privilegeManager.getForegroundApp(context)
-                var (tree, source) = dumpUiTree()
+                var (tree, source) = dumpUiTree(targetPackage = currentPkg)
 
                 // If page recently transitioned, verify hierarchy matches foreground app
                 if (currentPkg != null && tree != null && !tree.packageName.isNullOrBlank() && tree.packageName != currentPkg) {
                     delay(120)
-                    val retry = dumpUiTree()
+                    // Disallow heavy shell fallback during rapid transition retry to prevent HTTP timeouts
+                    val retry = dumpUiTree(targetPackage = currentPkg, allowHeavyFallback = false)
                     if (retry.first != null) {
                         tree = retry.first
                         source = retry.second
@@ -762,7 +776,7 @@ class McpProtocolHandler(
                     val (currentPkg, _) = privilegeManager.getForegroundApp(context)
                     var targetTree = lastDumpedTree
                     if (targetTree == null || (currentPkg != null && targetTree.packageName != null && targetTree.packageName != currentPkg)) {
-                        val (freshTree, _) = dumpUiTree()
+                        val (freshTree, _) = dumpUiTree(targetPackage = currentPkg)
                         if (freshTree != null) targetTree = freshTree
                     }
                     if (targetTree != null) {
@@ -1028,7 +1042,8 @@ class McpProtocolHandler(
                 val className = args["class_name"]?.jsonPrimitive?.contentOrNull
                 val matchType = args["match_type"]?.jsonPrimitive?.content ?: "contains"
 
-                val (tree, _) = dumpUiTree()
+                val (currentPkg, _) = privilegeManager.getForegroundApp(context)
+                val (tree, _) = dumpUiTree(targetPackage = currentPkg)
                 if (tree == null) {
                     return CallToolResult(
                         content = listOf(ContentItem(text = "Failed to capture UI tree. Diagnostics: [$lastDumpDiagnostics]")),
@@ -1334,12 +1349,13 @@ class McpProtocolHandler(
                 var matchedNode: UiNode? = null
                 var attempt = 0
                 var lsposedFailedOnce = false
+                val (currentPkg, _) = privilegeManager.getForegroundApp(context)
 
                 while (System.currentTimeMillis() - startTime < timeoutMs) {
                     attempt++
                     // For polling, allow heavy UiAutomator fallback only when Accessibility is unavailable and on first/final attempt
                     val allowHeavy = (McpAccessibilityService.instance == null && (attempt <= 1 || (System.currentTimeMillis() - startTime + intervalMs >= timeoutMs)))
-                    val (tree, _) = dumpUiTree(allowHeavyFallback = allowHeavy, skipLsposed = lsposedFailedOnce)
+                    val (tree, _) = dumpUiTree(targetPackage = currentPkg, allowHeavyFallback = allowHeavy, skipLsposed = lsposedFailedOnce)
 
                     if (tree != null) {
                         val allNodes = mutableListOf<UiNode>()
@@ -2041,32 +2057,34 @@ class McpProtocolHandler(
     private suspend fun dumpViaUiAutomator(): UiNode? = dumpViaUiAutomatorWithDiag().first
 
     private suspend fun dumpViaUiAutomatorWithDiag(): Pair<UiNode?, String> = withContext(Dispatchers.IO) {
-        val tmpFile = "/data/local/tmp/mcp_uidump.xml"
-        val (code, out) = if (RootBridge.isRootAvailable()) {
-            RootBridge.exec("rm -f $tmpFile && uiautomator dump $tmpFile")
-        } else if (ShizukuBridge.hasPermission()) {
-            ShizukuBridge.exec("sh", "-c", "rm -f $tmpFile && uiautomator dump $tmpFile")
-        } else {
-            return@withContext null to "Neither Root nor Shizuku permission available"
-        }
+        withTimeoutOrNull(6000L) {
+            val tmpFile = "/data/local/tmp/mcp_uidump.xml"
+            val (code, out) = if (RootBridge.isRootAvailable()) {
+                RootBridge.exec("rm -f $tmpFile && uiautomator dump $tmpFile")
+            } else if (ShizukuBridge.hasPermission()) {
+                ShizukuBridge.exec("sh", "-c", "rm -f $tmpFile && uiautomator dump $tmpFile")
+            } else {
+                return@withTimeoutOrNull null to "Neither Root nor Shizuku permission available"
+            }
 
-        if (code != 0) return@withContext null to "uiautomator dump command failed (exit code $code): $out"
+            if (code != 0) return@withTimeoutOrNull null to "uiautomator dump command failed (exit code $code): $out"
 
-        val xmlContent = if (RootBridge.isRootAvailable()) {
-            val (readCode, readOut) = RootBridge.exec("cat $tmpFile && rm -f $tmpFile")
-            if (readCode == 0) readOut else null
-        } else {
-            val (readCode, readOut) = ShizukuBridge.exec("cat", tmpFile)
-            ShizukuBridge.exec("rm", "-f", tmpFile)
-            if (readCode == 0) readOut else null
-        } ?: return@withContext null to "Failed to read dumped xml from $tmpFile"
+            val xmlContent = if (RootBridge.isRootAvailable()) {
+                val (readCode, readOut) = RootBridge.exec("cat $tmpFile && rm -f $tmpFile")
+                if (readCode == 0) readOut else null
+            } else {
+                val (readCode, readOut) = ShizukuBridge.exec("cat", tmpFile)
+                ShizukuBridge.exec("rm", "-f", tmpFile)
+                if (readCode == 0) readOut else null
+            } ?: return@withTimeoutOrNull null to "Failed to read dumped xml from $tmpFile"
 
-        val parsed = parseUiAutomatorXml(xmlContent)
-        if (parsed != null) {
-            parsed to "Success"
-        } else {
-            null to "Failed to parse uiautomator XML content"
-        }
+            val parsed = parseUiAutomatorXml(xmlContent)
+            if (parsed != null) {
+                parsed to "Success"
+            } else {
+                null to "Failed to parse uiautomator XML content"
+            }
+        } ?: (null to "UiAutomator dump timed out after 6000ms")
     }
 
     private class MutableUiNode(

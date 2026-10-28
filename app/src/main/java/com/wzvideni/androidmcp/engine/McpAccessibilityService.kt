@@ -45,18 +45,27 @@ class McpAccessibilityService : AccessibilityService() {
             if (isRunning) return true
             val componentName = "${context.packageName}/${McpAccessibilityService::class.java.name}"
             val current = Settings.Secure.getString(context.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: ""
-            val updated = if (current.isBlank()) componentName else if (!current.contains(componentName)) "$current:$componentName" else current
+            val withoutMe = current.split(":")
+                .filter { it.isNotBlank() && !it.startsWith(context.packageName) }
+                .joinToString(":")
+            val updated = if (withoutMe.isBlank()) componentName else "$withoutMe:$componentName"
 
+            // Toggle accessibility setting to force Android AccessibilityManagerService to re-bind
+            // (especially required after APK updates/reinstalls where the service becomes disconnected)
             if (ShizukuBridge.hasPermission()) {
+                ShizukuBridge.exec("settings", "put", "secure", "enabled_accessibility_services", withoutMe)
                 ShizukuBridge.exec("settings", "put", "secure", "enabled_accessibility_services", updated)
                 ShizukuBridge.exec("settings", "put", "secure", "accessibility_enabled", "1")
-                if (isPermissionGranted(context)) return true
             }
 
             if (RootBridge.isRootAvailable()) {
-                RootBridge.exec("settings put secure enabled_accessibility_services \"$updated\"")
-                RootBridge.exec("settings put secure accessibility_enabled 1")
-                if (isPermissionGranted(context)) return true
+                RootBridge.exec("settings put secure enabled_accessibility_services \"$withoutMe\" && settings put secure enabled_accessibility_services \"$updated\" && settings put secure accessibility_enabled 1")
+            }
+
+            // Allow brief window for Android to re-connect the service
+            for (i in 0..5) {
+                if (isRunning) return true
+                delay(100)
             }
 
             return isRunning || isPermissionGranted(context)

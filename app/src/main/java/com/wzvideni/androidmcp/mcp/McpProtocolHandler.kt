@@ -254,15 +254,22 @@ class McpProtocolHandler(
             ),
             Tool(
                 name = "press_key",
-                description = "Simulate key press (e.g., 'BACK', 'HOME', 'RECENTS', 'ENTER', 'POWER', 'VOLUME_UP', 'VOLUME_DOWN').",
+                description = "Simulate key press (e.g., 'BACK', 'HOME', 'RECENTS', 'ENTER', 'POWER', 'VOLUME_UP', 'VOLUME_DOWN'). Supports key name or numeric key code (e.g., 4 for BACK).",
                 inputSchema = ToolInputSchema(
                     properties = buildJsonObject {
                         put("key", buildJsonObject {
                             put("type", JsonPrimitive("string"))
-                            put("description", JsonPrimitive("Key name or key code"))
+                            put("description", JsonPrimitive("Key name (e.g., 'BACK', 'HOME') or key code (e.g., 4, '4')"))
                         })
-                    },
-                    required = listOf("key")
+                        put("key_code", buildJsonObject {
+                            put("type", JsonPrimitive("string"))
+                            put("description", JsonPrimitive("Alias for key parameter (compatible with numeric key code like 4)"))
+                        })
+                        put("keyCode", buildJsonObject {
+                            put("type", JsonPrimitive("string"))
+                            put("description", JsonPrimitive("Alias for key parameter"))
+                        })
+                    }
                 )
             ),
             Tool(
@@ -860,12 +867,20 @@ class McpProtocolHandler(
             }
 
             "press_key" -> {
-                val key = args["key"]?.jsonPrimitive?.content ?: ""
-                val (ok, msg) = InputController.pressKey(key)
-                if (ok && MacroManager.isRecording) {
-                    MacroManager.recordAction(buildJsonObject { put("action", JsonPrimitive("press_key")); put("key", JsonPrimitive(key)) })
+                val rawKey = args["key"] ?: args["key_code"] ?: args["keyCode"]
+                val key = InputController.resolveKeyName(rawKey)
+                if (key.isBlank()) {
+                    CallToolResult(
+                        content = listOf(ContentItem(text = "Missing key parameter (compatible with 'key', 'key_code', 'keyCode')")),
+                        isError = true
+                    )
+                } else {
+                    val (ok, msg) = InputController.pressKey(key)
+                    if (ok && MacroManager.isRecording) {
+                        MacroManager.recordAction(buildJsonObject { put("action", JsonPrimitive("press_key")); put("key", JsonPrimitive(key)) })
+                    }
+                    CallToolResult(content = listOf(ContentItem(text = msg)), isError = !ok)
                 }
-                CallToolResult(content = listOf(ContentItem(text = msg)), isError = !ok)
             }
 
             "launch_app" -> {

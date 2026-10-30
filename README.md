@@ -65,7 +65,7 @@
 | `swipe` | `x1`, `y1`, `x2`, `y2`, `duration_ms?: int` | 模拟任意轨迹的平滑滑动与手势滚动。 |
 | `drag_and_drop` | `from_element_id?`, `to_element_id?`, `x1?`, `y1?`, `x2?`, `y2?` | **拖拽手势**：模拟长按并拖拽至目标位置/组件。 |
 | `input_text` | `text: string` | 输入文本（支持完整 Unicode 与中文字符直接注入）。 |
-| `press_key` | `key: string` | 模拟物理按键（`BACK`, `HOME`, `RECENTS`, `POWER`, `VOLUME_UP`, `VOLUME_DOWN` 等）。 |
+| `press_key` | `key?: string | int` (兼容 `key_code`, `keyCode`) | 模拟物理按键（支持 `BACK`, `HOME`, `RECENTS`, `POWER` 等按键名或 `4` 等数字键码，兼容 `key_code` 与 `keyCode` 别名）。 |
 
 ### ⚡ 批处理与自动化宏引擎 (Macro Engine)
 | 工具名称 | 参数 | 说明 |

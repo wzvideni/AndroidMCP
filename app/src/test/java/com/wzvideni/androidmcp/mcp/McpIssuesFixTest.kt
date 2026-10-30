@@ -1,9 +1,14 @@
 package com.wzvideni.androidmcp.mcp
 
+import android.accessibilityservice.AccessibilityService
+import android.view.KeyEvent
+import com.wzvideni.androidmcp.engine.InputController
 import com.wzvideni.androidmcp.engine.MacroManager
 import com.wzvideni.androidmcp.model.RectBounds
 import com.wzvideni.androidmcp.model.UiNode
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import org.junit.Assert.*
@@ -181,5 +186,85 @@ class McpIssuesFixTest {
         assertNotNull("wait_for_element should match short resource_id", matched)
         assertEquals("com.wzvideni.scanplus:id/button_scan5", matched?.resourceId)
         assertEquals(1, matched?.id)
+    }
+
+    @Test
+    fun testPressKeyAliasesAndKeyCodeResolution() {
+        // 1. Test alias extraction from JsonObject
+        fun extractKey(args: JsonObject): String {
+            val rawKey = args["key"] ?: args["key_code"] ?: args["keyCode"]
+            return InputController.resolveKeyName(rawKey)
+        }
+
+        val fromKeyCodeNumber = extractKey(buildJsonObject { put("key_code", JsonPrimitive(4)) })
+        assertEquals("BACK", fromKeyCodeNumber)
+
+        val fromKeyCodeString = extractKey(buildJsonObject { put("key_code", JsonPrimitive("4")) })
+        assertEquals("BACK", fromKeyCodeString)
+
+        val fromCamelKeyCode = extractKey(buildJsonObject { put("keyCode", JsonPrimitive(4)) })
+        assertEquals("BACK", fromCamelKeyCode)
+
+        val fromKeyNumber = extractKey(buildJsonObject { put("key", JsonPrimitive(4)) })
+        assertEquals("BACK", fromKeyNumber)
+
+        val fromKeyName = extractKey(buildJsonObject { put("key", JsonPrimitive("BACK")) })
+        assertEquals("BACK", fromKeyName)
+
+        val fromKeycodePrefix = extractKey(buildJsonObject { put("key_code", JsonPrimitive("KEYCODE_BACK")) })
+        assertEquals("BACK", fromKeycodePrefix)
+
+        val fromEmpty = extractKey(buildJsonObject {})
+        assertEquals("", fromEmpty)
+
+        // 2. Test common key code resolution
+        assertEquals("HOME", InputController.resolveKeyName(JsonPrimitive(3)))
+        assertEquals("BACK", InputController.resolveKeyName(JsonPrimitive(4)))
+        assertEquals("RECENTS", InputController.resolveKeyName(JsonPrimitive(187)))
+        assertEquals("POWER", InputController.resolveKeyName(JsonPrimitive(26)))
+        assertEquals("NOTIFICATIONS", InputController.resolveKeyName(JsonPrimitive(83)))
+        assertEquals("ENTER", InputController.resolveKeyName(JsonPrimitive(66)))
+        assertEquals("DEL", InputController.resolveKeyName(JsonPrimitive(67)))
+        assertEquals("TAB", InputController.resolveKeyName(JsonPrimitive(61)))
+        assertEquals("VOLUME_UP", InputController.resolveKeyName(JsonPrimitive(24)))
+        assertEquals("VOLUME_DOWN", InputController.resolveKeyName(JsonPrimitive(25)))
+        assertEquals("VOLUME_MUTE", InputController.resolveKeyName(JsonPrimitive(164)))
+
+        // 3. Test parseKey mapping with accessibility global action and key codes
+        val (backCode, backAction) = InputController.parseKey("BACK")
+        assertEquals(KeyEvent.KEYCODE_BACK, backCode)
+        assertEquals(AccessibilityService.GLOBAL_ACTION_BACK, backAction)
+
+        val (backNumCode, backNumAction) = InputController.parseKey("4")
+        assertEquals(KeyEvent.KEYCODE_BACK, backNumCode)
+        assertEquals(AccessibilityService.GLOBAL_ACTION_BACK, backNumAction)
+
+        val (homeCode, homeAction) = InputController.parseKey("HOME")
+        assertEquals(KeyEvent.KEYCODE_HOME, homeCode)
+        assertEquals(AccessibilityService.GLOBAL_ACTION_HOME, homeAction)
+
+        val (homeNumCode, homeNumAction) = InputController.parseKey("3")
+        assertEquals(KeyEvent.KEYCODE_HOME, homeNumCode)
+        assertEquals(AccessibilityService.GLOBAL_ACTION_HOME, homeNumAction)
+
+        val (recentsCode, recentsAction) = InputController.parseKey("RECENTS")
+        assertEquals(KeyEvent.KEYCODE_APP_SWITCH, recentsCode)
+        assertEquals(AccessibilityService.GLOBAL_ACTION_RECENTS, recentsAction)
+
+        val (recentsNumCode, recentsNumAction) = InputController.parseKey("187")
+        assertEquals(KeyEvent.KEYCODE_APP_SWITCH, recentsNumCode)
+        assertEquals(AccessibilityService.GLOBAL_ACTION_RECENTS, recentsNumAction)
+
+        val (powerCode, powerAction) = InputController.parseKey("POWER")
+        assertEquals(KeyEvent.KEYCODE_POWER, powerCode)
+        assertEquals(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN, powerAction)
+
+        val (powerNumCode, powerNumAction) = InputController.parseKey("26")
+        assertEquals(KeyEvent.KEYCODE_POWER, powerNumCode)
+        assertEquals(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN, powerNumAction)
+
+        val (unknownCode, unknownAction) = InputController.parseKey("INVALID_KEY")
+        assertEquals(KeyEvent.KEYCODE_UNKNOWN, unknownCode)
+        assertNull(unknownAction)
     }
 }

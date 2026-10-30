@@ -195,7 +195,8 @@ object MacroManager {
                     message = res.second
                 }
                 "press_key", "key" -> {
-                    val key = item["key"]?.jsonPrimitive?.content ?: "BACK"
+                    val rawKey = item["key"] ?: item["key_code"] ?: item["keyCode"]
+                    val key = InputController.resolveKeyName(rawKey).ifBlank { "BACK" }
                     val res = InputController.pressKey(key)
                     success = res.first
                     message = res.second

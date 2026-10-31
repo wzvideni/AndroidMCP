@@ -4,6 +4,7 @@ import android.util.Log
 import com.topjohnwu.superuser.Shell
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 object RootBridge {
@@ -66,14 +67,17 @@ object RootBridge {
         return isRootGranted
     }
 
-    suspend fun exec(command: String): Pair<Int, String> = withContext(Dispatchers.IO) {
+    suspend fun exec(command: String, timeoutMs: Long = 60000L): Pair<Int, String> = withContext(Dispatchers.IO) {
         if (!checkRootAsync()) return@withContext -1 to "Root is not granted"
         try {
-            val result = Shell.cmd(command).exec()
-            val output = result.out.joinToString("\n")
-            val errors = result.err.joinToString("\n")
-            val fullOutput = if (errors.isNotBlank()) "$output\nError: $errors" else output
-            result.code to fullOutput.trim()
+            val res = withTimeoutOrNull(timeoutMs) {
+                val result = Shell.cmd(command).exec()
+                val output = result.out.joinToString("\n")
+                val errors = result.err.joinToString("\n")
+                val fullOutput = if (errors.isNotBlank()) "$output\nError: $errors" else output
+                result.code to fullOutput.trim()
+            }
+            res ?: (-1 to "Root command timed out after ${timeoutMs}ms: $command")
         } catch (e: Throwable) {
             -1 to "Root execution failed: ${e.message}"
         }

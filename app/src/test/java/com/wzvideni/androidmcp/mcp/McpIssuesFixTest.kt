@@ -10,7 +10,11 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -266,5 +270,107 @@ class McpIssuesFixTest {
         val (unknownCode, unknownAction) = InputController.parseKey("INVALID_KEY")
         assertEquals(KeyEvent.KEYCODE_UNKNOWN, unknownCode)
         assertNull(unknownAction)
+    }
+
+    @Test
+    fun testPrivilegedShellCommandDetection() {
+        val amInstrumentCmd = "am instrument -w -e class com.huawei.hms.scankit.p.QRCodeDataMaskInstrumentedTest com.wzvideni.scanplus.test/androidx.test.runner.AndroidJUnitRunner"
+        assertTrue("am instrument must be detected as privileged", McpProtocolHandler.isPrivilegedShellCommand(amInstrumentCmd))
+
+        val amInstrumentWithUser = "am instrument --user 0 -w -e class com.huawei.hms.scankit.p.QRCodeDataMaskInstrumentedTest com.wzvideni.scanplus.test/androidx.test.runner.AndroidJUnitRunner"
+        assertTrue("am instrument with --user must be detected as privileged", McpProtocolHandler.isPrivilegedShellCommand(amInstrumentWithUser))
+
+        assertTrue("pm grant is privileged", McpProtocolHandler.isPrivilegedShellCommand("pm grant com.wzvideni.scanplus android.permission.CAMERA"))
+        assertTrue("pm clear is privileged", McpProtocolHandler.isPrivilegedShellCommand("pm clear com.wzvideni.scanplus"))
+        assertTrue("pm install is privileged", McpProtocolHandler.isPrivilegedShellCommand("pm install /data/local/tmp/app.apk"))
+        assertTrue("settings put is privileged", McpProtocolHandler.isPrivilegedShellCommand("settings put secure enabled_accessibility_services com.example/.Service"))
+        assertTrue("dumpsys is privileged", McpProtocolHandler.isPrivilegedShellCommand("dumpsys activity top"))
+        assertTrue("cmd is privileged", McpProtocolHandler.isPrivilegedShellCommand("cmd notification allow_listener com.example/.Service"))
+        assertTrue("input is privileged", McpProtocolHandler.isPrivilegedShellCommand("input tap 100 200"))
+        assertTrue("su is privileged", McpProtocolHandler.isPrivilegedShellCommand("su -c id"))
+        assertTrue("piped command containing am instrument is privileged", McpProtocolHandler.isPrivilegedShellCommand("cd /data/local/tmp && am instrument -w com.example.test/androidx.test.runner.AndroidJUnitRunner"))
+
+        assertFalse("echo is not privileged", McpProtocolHandler.isPrivilegedShellCommand("echo 'hello world'"))
+        assertFalse("ls is not privileged", McpProtocolHandler.isPrivilegedShellCommand("ls -la /sdcard"))
+        assertFalse("pwd is not privileged", McpProtocolHandler.isPrivilegedShellCommand("pwd"))
+        assertFalse("empty command is not privileged", McpProtocolHandler.isPrivilegedShellCommand(""))
+    }
+
+    @Test
+    fun testPermissionDenialDetectionAndGuidance() {
+        val userError1 = "java.lang.SecurityException: Permission Denial: startInstrumentation asks to run as user -2 but is calling from uid u0a339; this requires android.permission.INTERACT_ACROSS_USERS_FULL"
+        assertTrue("SecurityException Permission Denial must be detected", McpProtocolHandler.isPermissionDenial(userError1))
+
+        val userError2 = "INSTRUMENTATION_STATUS: Error=Permission Denial: instrumentation test ComponentInfo{com.wzvideni.scanplus.test/androidx.test.runner.AndroidJUnitRunner} from pid=8702, uid=10339, pkgName=null not allowed because it's not started from SHELL"
+        assertTrue("not allowed because it's not started from SHELL must be detected", McpProtocolHandler.isPermissionDenial(userError2))
+
+        val normalOutput = "com.huawei.hms.scankit.p.QRCodeDataMaskInstrumentedTest:......\nTime: 0.345\nOK (6 tests)"
+        assertFalse("Normal test output is not permission denial", McpProtocolHandler.isPermissionDenial(normalOutput))
+
+        val guidance = McpProtocolHandler.getPrivilegeGuidance("am instrument -w ...")
+        assertTrue("Guidance should mention Root", guidance.contains("Root"))
+        assertTrue("Guidance should mention Shizuku", guidance.contains("Shizuku"))
+        assertTrue("Guidance should mention UID", guidance.contains("UID"))
+    }
+
+    @Test
+    fun testExecuteShellParamParsing() {
+        fun parseShellArgs(args: JsonObject): Triple<String, Boolean?, Long> {
+            val cmd = args["command"]?.jsonPrimitive?.contentOrNull
+                ?: args["cmd"]?.jsonPrimitive?.contentOrNull
+                ?: ""
+
+            val explicitRoot = args["as_root"]?.jsonPrimitive?.booleanOrNull
+                ?: args["use_root"]?.jsonPrimitive?.booleanOrNull
+                ?: args["root"]?.jsonPrimitive?.booleanOrNull
+                ?: args["as_root"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+                ?: args["use_root"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+                ?: args["root"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+
+            val timeoutMs = args["timeout_ms"]?.jsonPrimitive?.longOrNull
+                ?: args["timeout"]?.jsonPrimitive?.longOrNull
+                ?: args["timeout_ms"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+                ?: args["timeout"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+                ?: 60000L
+
+            return Triple(cmd, explicitRoot, timeoutMs)
+        }
+
+        // Test as_root: true
+        val (c1, r1, t1) = parseShellArgs(buildJsonObject {
+            put("command", JsonPrimitive("id"))
+            put("as_root", JsonPrimitive(true))
+        })
+        assertEquals("id", c1)
+        assertEquals(true, r1)
+        assertEquals(60000L, t1)
+
+        // Test use_root alias
+        val (c2, r2, _) = parseShellArgs(buildJsonObject {
+            put("command", JsonPrimitive("id"))
+            put("use_root", JsonPrimitive(true))
+        })
+        assertEquals(true, r2)
+
+        // Test root alias
+        val (c3, r3, _) = parseShellArgs(buildJsonObject {
+            put("cmd", JsonPrimitive("id"))
+            put("root", JsonPrimitive(false))
+        })
+        assertEquals("id", c3)
+        assertEquals(false, r3)
+
+        // Test omitted root -> null
+        val (c4, r4, _) = parseShellArgs(buildJsonObject {
+            put("command", JsonPrimitive("am instrument ..."))
+        })
+        assertNull(r4)
+
+        // Test custom timeout_ms
+        val (_, _, t5) = parseShellArgs(buildJsonObject {
+            put("command", JsonPrimitive("test"))
+            put("timeout_ms", JsonPrimitive(120000))
+        })
+        assertEquals(120000L, t5)
     }
 }

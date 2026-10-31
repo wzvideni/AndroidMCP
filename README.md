@@ -96,7 +96,7 @@
 | `system_control` | `action`, `param?` | 深度系统管控（`wifi_on`/`off`, `set_proxy`, `airplane_on`, `set_screen_density`, `grant_all_permissions`, `grant_notification_listener`, `grant_accessibility_service`, `keep_alive_whitelist` 等）。 |
 | `system_file_ops` | `action: 'read' \| 'write' \| 'list' \| 'delete'`, `path`, `content?`, `as_base64?: boolean` | 对系统分区与私有沙箱进行任意文件读写和管理。 |
 | `send_intent` | `type`, `action`, `data_uri?`, `package_name?`, `extras?: object` | 向系统发送任意 Activity / Broadcast / Service Intent。 |
-| `execute_shell` | `command: string`, `use_root?: boolean` | 执行 Shell 脚本指令。 |
+| `execute_shell` | `command: string`, `as_root?: boolean`, `timeout_ms?: int` | 执行 Shell 脚本指令（自动识别 `am instrument` / `pm` / `settings` 等特权命令并自动提权至 Root / Shizuku，支持超时配置与权限异常引导提示）。 |
 | `launch_app` / `stop_app` / `clear_app_data` | `package_name: string` | 应用生命周期控制与数据重置。 |
 | `get_device_info` / `get_recent_logs` | - | 获取硬件与特权状态信息 / 实时抓取过滤 Logcat 日志。 |
 

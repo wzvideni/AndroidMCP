@@ -41,6 +41,7 @@ import com.wzvideni.androidmcp.vision.SetOfMarkAnnotator
 import com.wzvideni.androidmcp.vision.UiTreeFlattener
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -76,6 +77,119 @@ class McpProtocolHandler(
     companion object {
         private const val TAG = "McpProtocolHandler"
         private val BOUNDS_REGEX = Regex("\\[(\\d+),(\\d+)]\\[(\\d+),(\\d+)]")
+
+        fun isPrivilegedShellCommand(command: String): Boolean {
+            val clean = command.trim()
+            if (clean.isEmpty()) return false
+
+            // Direct check for am instrument
+            if (clean.contains("am instrument") || clean.contains("instrumentation test")) return true
+
+            // Split by command delimiters
+            val subCommands = clean.split(Regex("[;&|\\n]+"))
+            for (rawSub in subCommands) {
+                val sub = rawSub.trim()
+                if (sub.isEmpty()) continue
+
+                val tokens = sub.split(Regex("\\s+"))
+                if (tokens.isEmpty()) continue
+
+                var idx = 0
+                while (idx < tokens.size && (tokens[idx].contains('=') || tokens[idx] in listOf("nohup", "time", "sudo"))) {
+                    idx++
+                }
+                if (idx >= tokens.size) continue
+
+                val head = tokens[idx]
+                val second = tokens.getOrNull(idx + 1) ?: ""
+
+                when (head) {
+                    "am" -> {
+                        if (second in listOf(
+                                "instrument", "force-stop", "kill", "kill-all", "restart",
+                                "switch-user", "start-user", "stop-user", "profile", "dumpheap",
+                                "set-debug-app", "clear-debug-app", "set-agent-app", "clear-watch-heap"
+                            ) || sub.contains("instrument")
+                        ) {
+                            return true
+                        }
+                    }
+                    "pm" -> {
+                        if (second in listOf(
+                                "grant", "revoke", "reset-permissions", "set-permission-enforced",
+                                "install", "install-create", "install-write", "install-commit", "install-abandon",
+                                "uninstall", "clear", "enable", "disable", "disable-user", "disable-until-used",
+                                "default-state", "hide", "unhide", "suspend", "unsuspend", "set-install-location",
+                                "set-home-activity", "trim-caches"
+                            )
+                        ) {
+                            return true
+                        }
+                    }
+                    "cmd" -> return true
+                    "settings" -> {
+                        if (second in listOf("put", "delete", "reset")) return true
+                    }
+                    "svc" -> return true
+                    "uiautomator" -> return true
+                    "input" -> return true
+                    "screencap", "screenrecord" -> return true
+                    "dumpsys" -> return true
+                    "setprop" -> return true
+                    "dmesg" -> return true
+                    "iptables", "ip6tables" -> return true
+                    "logcat" -> return true
+                    "su" -> return true
+                    "reboot" -> return true
+                }
+            }
+            return false
+        }
+
+        fun isPermissionDenial(output: String): Boolean {
+            val lower = output.lowercase()
+            return lower.contains("permission denial") ||
+                    lower.contains("securityexception") ||
+                    lower.contains("not allowed because it's not started from shell") ||
+                    lower.contains("requires android.permission.") ||
+                    lower.contains("interact_across_users") ||
+                    lower.contains("operation not permitted") ||
+                    lower.contains("permission denied")
+        }
+
+        fun getPrivilegeGuidance(cmd: String): String {
+            val uid = try { android.os.Process.myUid() } catch (_: Throwable) { -1 }
+            return """
+                [Privilege Guidance]
+                Command '$cmd' failed due to permission denial (executed under app UID: $uid).
+                This command requires SHELL (UID 2000) or ROOT (UID 0) privileges.
+                To resolve:
+                1. Root: Ensure Root permission is granted to AndroidMCP, or pass "as_root": true.
+                2. Shizuku: Start Shizuku service and grant Shizuku permission to AndroidMCP.
+            """.trimIndent()
+        }
+    }
+
+    private suspend fun executeUnprivilegedShell(cmd: String, timeoutMs: Long): Pair<Int, String> = withContext(Dispatchers.IO) {
+        try {
+            val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
+            val res = withTimeoutOrNull(timeoutMs) {
+                val outputDeferred = async(Dispatchers.IO) { proc.inputStream.bufferedReader().use { it.readText() } }
+                val errorDeferred = async(Dispatchers.IO) { proc.errorStream.bufferedReader().use { it.readText() } }
+                val exit = proc.waitFor()
+                val output = outputDeferred.await()
+                val err = errorDeferred.await()
+                exit to if (err.isNotBlank()) "$output\n$err".trim() else output.trim()
+            }
+            if (res != null) {
+                res
+            } else {
+                try { proc.destroy() } catch (_: Throwable) { }
+                -1 to "Execution timed out after ${timeoutMs}ms"
+            }
+        } catch (e: Throwable) {
+            -1 to "Execution error: ${e.message}"
+        }
     }
 
     private var lastDumpedTree: UiNode? = null
@@ -306,13 +420,20 @@ class McpProtocolHandler(
             ),
             Tool(
                 name = "execute_shell",
-                description = "Execute a shell command on the device (supports normal shell, Shizuku, or Root).",
+                description = "Execute a shell command on the device (supports normal shell, Shizuku, or Root). Privileged commands (e.g. 'am instrument', 'pm grant', system commands) are automatically elevated to Root or Shizuku if available.",
                 inputSchema = ToolInputSchema(
                     properties = buildJsonObject {
-                        put("command", buildJsonObject { put("type", JsonPrimitive("string")) })
+                        put("command", buildJsonObject {
+                            put("type", JsonPrimitive("string"))
+                            put("description", JsonPrimitive("Shell command to execute"))
+                        })
                         put("as_root", buildJsonObject {
                             put("type", JsonPrimitive("boolean"))
-                            put("description", JsonPrimitive("Run as root if true"))
+                            put("description", JsonPrimitive("Run as root (su). If omitted, automatically elevates to Root or Shizuku for privileged commands (e.g. am instrument) or when Root is available"))
+                        })
+                        put("timeout_ms", buildJsonObject {
+                            put("type", JsonPrimitive("integer"))
+                            put("description", JsonPrimitive("Command execution timeout in milliseconds (default: 60000)"))
                         })
                     },
                     required = listOf("command")
@@ -905,29 +1026,101 @@ class McpProtocolHandler(
             }
 
             "execute_shell" -> {
-                val cmd = args["command"]?.jsonPrimitive?.content ?: ""
-                val asRoot = args["as_root"]?.jsonPrimitive?.booleanOrNull ?: false
+                val cmd = args["command"]?.jsonPrimitive?.contentOrNull
+                    ?: args["cmd"]?.jsonPrimitive?.contentOrNull
+                    ?: ""
+                if (cmd.isBlank()) {
+                    return CallToolResult(
+                        content = listOf(ContentItem(text = "Error: command is required")),
+                        isError = true
+                    )
+                }
 
-                val (code, out) = if (asRoot && RootBridge.isRootAvailable()) {
-                    RootBridge.exec(cmd)
-                } else if (ShizukuBridge.hasPermission()) {
-                    ShizukuBridge.exec("sh", "-c", cmd)
-                } else {
-                    withContext(Dispatchers.IO) {
-                        try {
-                            val proc = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
-                            val output = proc.inputStream.bufferedReader().readText()
-                            val err = proc.errorStream.bufferedReader().readText()
-                            val exit = proc.waitFor()
-                            exit to if (err.isNotBlank()) "$output\n$err" else output
-                        } catch (e: Throwable) {
-                            -1 to "Execution error: ${e.message}"
+                val explicitRoot = args["as_root"]?.jsonPrimitive?.booleanOrNull
+                    ?: args["use_root"]?.jsonPrimitive?.booleanOrNull
+                    ?: args["root"]?.jsonPrimitive?.booleanOrNull
+                    ?: args["as_root"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+                    ?: args["use_root"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+                    ?: args["root"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+
+                val timeoutMs = args["timeout_ms"]?.jsonPrimitive?.longOrNull
+                    ?: args["timeout"]?.jsonPrimitive?.longOrNull
+                    ?: args["timeout_ms"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+                    ?: args["timeout"]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+                    ?: 60000L
+
+                val isPrivileged = isPrivilegedShellCommand(cmd)
+                val isRoot = RootBridge.isRootAvailable()
+                val isShizuku = ShizukuBridge.hasPermission()
+
+                val (code, out, usedBackend) = when {
+                    explicitRoot == true -> {
+                        if (isRoot) {
+                            val (c, o) = RootBridge.exec(cmd, timeoutMs)
+                            Triple(c, o, "root")
+                        } else if (isShizuku) {
+                            val (c, o) = ShizukuBridge.execWithTimeout(timeoutMs, "sh", "-c", cmd)
+                            Triple(c, o, "shizuku")
+                        } else {
+                            Triple(-1, "Root permission is requested ('as_root': true), but Root (su) is not available or granted on this device.", "none")
+                        }
+                    }
+                    explicitRoot == false -> {
+                        if (isShizuku) {
+                            val (c, o) = ShizukuBridge.execWithTimeout(timeoutMs, "sh", "-c", cmd)
+                            Triple(c, o, "shizuku")
+                        } else {
+                            val (c, o) = executeUnprivilegedShell(cmd, timeoutMs)
+                            Triple(c, o, "app_uid")
+                        }
+                    }
+                    isPrivileged -> {
+                        if (isRoot) {
+                            val (c, o) = RootBridge.exec(cmd, timeoutMs)
+                            Triple(c, o, "root_auto")
+                        } else if (isShizuku) {
+                            val (c, o) = ShizukuBridge.execWithTimeout(timeoutMs, "sh", "-c", cmd)
+                            Triple(c, o, "shizuku_auto")
+                        } else {
+                            val (c, o) = executeUnprivilegedShell(cmd, timeoutMs)
+                            Triple(c, o, "app_uid")
+                        }
+                    }
+                    else -> {
+                        if (isShizuku) {
+                            val (c, o) = ShizukuBridge.execWithTimeout(timeoutMs, "sh", "-c", cmd)
+                            Triple(c, o, "shizuku")
+                        } else if (isRoot) {
+                            val (c, o) = RootBridge.exec(cmd, timeoutMs)
+                            Triple(c, o, "root")
+                        } else {
+                            val (c, o) = executeUnprivilegedShell(cmd, timeoutMs)
+                            Triple(c, o, "app_uid")
                         }
                     }
                 }
+
+                var finalCode = code
+                var finalOut = out
+
+                // Handle permission denial: auto-retry with Root if available and not explicitly opted out, or provide guidance
+                if (finalCode != 0 && usedBackend != "root" && usedBackend != "root_auto" && isPermissionDenial(finalOut)) {
+                    if (explicitRoot != false && RootBridge.isRootAvailable()) {
+                        val (retryCode, retryOut) = RootBridge.exec(cmd, timeoutMs)
+                        finalCode = retryCode
+                        finalOut = if (retryCode == 0) {
+                            retryOut
+                        } else {
+                            "$retryOut\n\n[Auto-Escalation Note: Command was automatically re-executed via Root after permission denial in $usedBackend (Exit Code: $retryCode)]."
+                        }
+                    } else {
+                        finalOut = "$finalOut\n\n" + getPrivilegeGuidance(cmd)
+                    }
+                }
+
                 CallToolResult(
-                    content = listOf(ContentItem(text = "Exit Code: $code\nOutput:\n$out")),
-                    isError = code != 0
+                    content = listOf(ContentItem(text = "Exit Code: $finalCode\nOutput:\n$finalOut")),
+                    isError = finalCode != 0
                 )
             }
 

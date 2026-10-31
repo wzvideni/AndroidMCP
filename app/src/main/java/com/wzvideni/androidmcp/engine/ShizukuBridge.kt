@@ -74,7 +74,7 @@ object ShizukuBridge {
         }
     }
 
-    suspend fun exec(vararg command: String): Pair<Int, String> = execWithTimeout(10000L, *command)
+    suspend fun exec(vararg command: String): Pair<Int, String> = execWithTimeout(60000L, *command)
 
     suspend fun execWithTimeout(timeoutMs: Long, vararg command: String): Pair<Int, String> = withContext(Dispatchers.IO) {
         if (!isRunning() || !hasPermission()) {

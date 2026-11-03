@@ -27,6 +27,38 @@ object ShizukuBridge {
     private const val TAG = "ShizukuBridge"
     private var isHiddenApiBypassed = false
 
+    @Volatile
+    private var inputManagerBinder: IBinder? = null
+    @Volatile
+    private var injectInputEventMethod: Method? = null
+    @Volatile
+    private var iInputManager: Any? = null
+    @Volatile
+    private var inputManagerInitAttempted = false
+
+    private fun initInputManager(): Boolean {
+        if (iInputManager != null && injectInputEventMethod != null) return true
+        if (inputManagerInitAttempted && iInputManager == null) return false
+        inputManagerInitAttempted = true
+        return try {
+            val binder = SystemServiceHelper.getSystemService("input") ?: return false
+            inputManagerBinder = ShizukuBinderWrapper(binder)
+            val stubClass = Class.forName("android.hardware.input.IInputManager\$Stub")
+            val asInterface = stubClass.getMethod("asInterface", IBinder::class.java)
+            iInputManager = asInterface.invoke(null, inputManagerBinder)
+            val iInputManagerClass = Class.forName("android.hardware.input.IInputManager")
+            injectInputEventMethod = iInputManagerClass.methods.firstOrNull {
+                it.name == "injectInputEvent" && it.parameterTypes.isNotEmpty() &&
+                    InputEvent::class.java.isAssignableFrom(it.parameterTypes[0])
+            }
+            injectInputEventMethod?.isAccessible = true
+            iInputManager != null && injectInputEventMethod != null
+        } catch (e: Throwable) {
+            Log.w(TAG, "Failed to init Shizuku IInputManager binder: ${e.message}")
+            false
+        }
+    }
+
     fun initHiddenApiBypass() {
         if (!isHiddenApiBypassed && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             try {
@@ -74,7 +106,7 @@ object ShizukuBridge {
         }
     }
 
-    suspend fun exec(vararg command: String): Pair<Int, String> = execWithTimeout(60000L, *command)
+    suspend fun exec(vararg command: String): Pair<Int, String> = execWithTimeout(15000L, *command)
 
     suspend fun execWithTimeout(timeoutMs: Long, vararg command: String): Pair<Int, String> = withContext(Dispatchers.IO) {
         if (!isRunning() || !hasPermission()) {
@@ -90,16 +122,36 @@ object ShizukuBridge {
             newProcessMethod.isAccessible = true
             val process = newProcessMethod.invoke(null, command, null, null) as Process
 
+            // Close stdin immediately to prevent processes (like cmd package / pm) from stalling
+            try {
+                process.outputStream?.close()
+            } catch (_: Throwable) {}
+
             val result = withTimeoutOrNull(timeoutMs) {
                 val outDeferred = async(Dispatchers.IO) {
-                    process.inputStream.bufferedReader().use { it.readText() }
+                    try {
+                        process.inputStream.bufferedReader().use { it.readText() }
+                    } catch (_: Throwable) {
+                        ""
+                    }
                 }
                 val errDeferred = async(Dispatchers.IO) {
-                    process.errorStream.bufferedReader().use { it.readText() }
+                    try {
+                        process.errorStream.bufferedReader().use { it.readText() }
+                    } catch (_: Throwable) {
+                        ""
+                    }
+                }
+                val waitDeferred = async(Dispatchers.IO) {
+                    try {
+                        process.waitFor()
+                    } catch (_: Throwable) {
+                        -1
+                    }
                 }
                 val out = outDeferred.await()
                 val err = errDeferred.await()
-                val exitCode = process.waitFor()
+                val exitCode = waitDeferred.await()
                 val full = if (err.isNotBlank()) "$out\n$err".trim() else out.trim()
                 exitCode to full
             }
@@ -109,8 +161,13 @@ object ShizukuBridge {
             } else {
                 try {
                     process.destroy()
-                } catch (_: Throwable) {
-                }
+                } catch (_: Throwable) {}
+                try {
+                    process.inputStream?.close()
+                } catch (_: Throwable) {}
+                try {
+                    process.errorStream?.close()
+                } catch (_: Throwable) {}
                 -1 to "Shizuku command timed out after ${timeoutMs}ms: ${command.joinToString(" ")}"
             }
         } catch (e: Throwable) {
@@ -118,25 +175,67 @@ object ShizukuBridge {
         }
     }
 
-    suspend fun injectTap(x: Float, y: Float): Boolean {
-        // Fast path via Shizuku shell command or InputManager
-        val (code, _) = exec("input", "tap", x.toInt().toString(), y.toInt().toString())
-        return code == 0
+    suspend fun injectTap(x: Float, y: Float): Boolean = withContext(Dispatchers.IO) {
+        if (!isRunning() || !hasPermission()) return@withContext false
+        // 1. Try fast IInputManager Binder injection (< 5ms)
+        try {
+            if (initInputManager()) {
+                val now = SystemClock.uptimeMillis()
+                val down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x, y, 0).apply {
+                    source = InputDevice.SOURCE_TOUCHSCREEN
+                }
+                val up = MotionEvent.obtain(now, now + 40, MotionEvent.ACTION_UP, x, y, 0).apply {
+                    source = InputDevice.SOURCE_TOUCHSCREEN
+                }
+                val argsDown = if (injectInputEventMethod!!.parameterTypes.size == 2) arrayOf(down, 0) else arrayOf(down, 0, 0)
+                val argsUp = if (injectInputEventMethod!!.parameterTypes.size == 2) arrayOf(up, 0) else arrayOf(up, 0, 0)
+                val okDown = injectInputEventMethod!!.invoke(iInputManager, *argsDown) as? Boolean ?: true
+                val okUp = injectInputEventMethod!!.invoke(iInputManager, *argsUp) as? Boolean ?: true
+                down.recycle()
+                up.recycle()
+                if (okDown && okUp) return@withContext true
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Fast tap binder injection failed: ${e.message}")
+        }
+
+        // 2. Fallback to input shell command with strict 3500ms timeout
+        val (code, _) = execWithTimeout(3500L, "input", "tap", x.toInt().toString(), y.toInt().toString())
+        code == 0
     }
 
     suspend fun injectSwipe(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long): Boolean {
-        val (code, _) = exec("input", "swipe", x1.toInt().toString(), y1.toInt().toString(), x2.toInt().toString(), y2.toInt().toString(), durationMs.toString())
+        val timeout = (durationMs + 3000L).coerceAtLeast(4000L)
+        val (code, _) = execWithTimeout(timeout, "input", "swipe", x1.toInt().toString(), y1.toInt().toString(), x2.toInt().toString(), y2.toInt().toString(), durationMs.toString())
         return code == 0
     }
 
     suspend fun injectText(text: String): Boolean {
-        val (code, _) = exec("input", "text", text)
+        val (code, _) = execWithTimeout(5000L, "input", "text", text)
         return code == 0
     }
 
-    suspend fun injectKeyEvent(keyCode: Int): Boolean {
-        val (code, _) = exec("input", "keyevent", keyCode.toString())
-        return code == 0
+    suspend fun injectKeyEvent(keyCode: Int): Boolean = withContext(Dispatchers.IO) {
+        if (!isRunning() || !hasPermission()) return@withContext false
+        // 1. Try fast IInputManager Binder injection (< 5ms)
+        try {
+            if (initInputManager()) {
+                val now = SystemClock.uptimeMillis()
+                val down = KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0)
+                val up = KeyEvent(now, now, KeyEvent.ACTION_UP, keyCode, 0)
+                val argsDown = if (injectInputEventMethod!!.parameterTypes.size == 2) arrayOf(down, 0) else arrayOf(down, 0, 0)
+                val argsUp = if (injectInputEventMethod!!.parameterTypes.size == 2) arrayOf(up, 0) else arrayOf(up, 0, 0)
+                val okDown = injectInputEventMethod!!.invoke(iInputManager, *argsDown) as? Boolean ?: true
+                val okUp = injectInputEventMethod!!.invoke(iInputManager, *argsUp) as? Boolean ?: true
+                if (okDown && okUp) return@withContext true
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Fast keyevent binder injection failed: ${e.message}")
+        }
+
+        // 2. Fallback to input shell command with strict 3500ms timeout
+        val (code, _) = execWithTimeout(3500L, "input", "keyevent", keyCode.toString())
+        code == 0
     }
 
     suspend fun takeScreenshotRaw(): ByteArray? = withContext(Dispatchers.IO) {

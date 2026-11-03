@@ -302,7 +302,7 @@ class McpProtocolHandler(
             ),
             Tool(
                 name = "capture_screenshot",
-                description = "Capture current screen image. Optionally draws Set-of-Mark (SoM) bounding boxes with numeric IDs on interactive elements.",
+                description = "Capture current screen image. Optionally draws Set-of-Mark (SoM) bounding boxes with numeric IDs on interactive elements. Supports scale parameter for bandwidth optimization.",
                 inputSchema = ToolInputSchema(
                     properties = buildJsonObject {
                         put("annotate_som", buildJsonObject {
@@ -312,6 +312,10 @@ class McpProtocolHandler(
                         put("quality", buildJsonObject {
                             put("type", JsonPrimitive("integer"))
                             put("description", JsonPrimitive("JPEG compression quality (1-100), default 80"))
+                        })
+                        put("scale", buildJsonObject {
+                            put("type", JsonPrimitive("number"))
+                            put("description", JsonPrimitive("Image scaling factor (e.g. 0.5 for 50% scale, between 0.1 and 1.0), default 1.0"))
                         })
                     }
                 )
@@ -712,12 +716,15 @@ class McpProtocolHandler(
             ),
             Tool(
                 name = "install_apk",
-                description = "Silently install an APK package on device via Shizuku or Root.",
+                description = "Silently install an APK package on device via Shizuku or Root. Supports path, file_path, or apk_path parameter aliases.",
                 inputSchema = ToolInputSchema(
                     properties = buildJsonObject {
-                        put("path", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "File path of the APK on the device (e.g. /data/local/tmp/app.apk)") })
+                        put("path", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "File path of the APK on the device (e.g. /data/local/tmp/app.apk). Aliases: file_path, apk_path") })
+                        put("file_path", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "Alias for path: File path of the APK on the device") })
+                        put("apk_path", buildJsonObject { put("type", JsonPrimitive("string")); put("description", "Alias for path: File path of the APK on the device") })
                         put("reinstall", buildJsonObject { put("type", JsonPrimitive("boolean")); put("description", "Whether to reinstall / keep data (-r), default true") })
                         put("downgrade", buildJsonObject { put("type", JsonPrimitive("boolean")); put("description", "Whether to allow downgrade (-d), default true") })
+                        put("allow_downgrade", buildJsonObject { put("type", JsonPrimitive("boolean")); put("description", "Alias for downgrade (-d), default true") })
                         put("grant_permissions", buildJsonObject { put("type", JsonPrimitive("boolean")); put("description", "Whether to grant all runtime permissions (-g), default true") })
                     },
                     required = listOf("path")
@@ -894,6 +901,7 @@ class McpProtocolHandler(
             "capture_screenshot" -> {
                 val annotateSom = args["annotate_som"]?.jsonPrimitive?.booleanOrNull ?: false
                 val quality = args["quality"]?.jsonPrimitive?.intOrNull ?: 80
+                val scale = (args["scale"]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull() ?: 1.0).toFloat().coerceIn(0.1f, 1.0f)
 
                 var bitmap = ScreenCapturer.captureBitmap() ?: return CallToolResult(
                     content = listOf(ContentItem(text = "Screenshot capture failed. Ensure Root, Shizuku, or Accessibility is enabled.")),
@@ -910,6 +918,14 @@ class McpProtocolHandler(
                     if (targetTree != null) {
                         val interactiveElements = UiTreeFlattener.flattenInteractive(targetTree)
                         bitmap = SetOfMarkAnnotator.annotate(bitmap, interactiveElements)
+                    }
+                }
+
+                if (scale < 1.0f) {
+                    val scaled = ScreenCapturer.scaleBitmap(bitmap, scale)
+                    if (scaled != bitmap) {
+                        bitmap.recycle()
+                        bitmap = scaled
                     }
                 }
 
@@ -1308,16 +1324,42 @@ class McpProtocolHandler(
                 }
 
                 if (matched == null) {
-                    val candidates = allNodes
+                    // Check if selector resource_id specifies a package that differs from foreground package
+                    val selectorPkg = resId?.let { id ->
+                        when {
+                            id.contains(":id/") -> id.substringBefore(":id/").takeIf { it.contains(".") }
+                            id.contains(":") -> id.substringBefore(":").takeIf { it.contains(".") }
+                            else -> null
+                        }
+                    }
+                    val fgPkg = currentPkg ?: tree.packageName
+                    val pkgMismatchWarning = if (selectorPkg != null && fgPkg != null && !fgPkg.equals(selectorPkg, ignoreCase = true)) {
+                        "Foreground package ($fgPkg) differs from selector package ($selectorPkg). The target app may be in the background.\n\n"
+                    } else ""
+
+                    // Score and rank candidates to pick top 5 most relevant
+                    val rankedCandidates = allNodes
                         .filter { !it.resourceId.isNullOrBlank() || !it.text.isNullOrBlank() || !it.description.isNullOrBlank() }
                         .filter { it.bounds.width > 0 && it.bounds.height > 0 }
-                        .take(20)
+                        .sortedByDescending { node ->
+                            var score = 0
+                            if (resId != null) {
+                                val shortResId = resId.substringAfterLast(":id/").substringAfterLast('/')
+                                if (node.resourceId?.contains(shortResId, ignoreCase = true) == true) score += 10
+                            }
+                            if (text != null && node.text?.contains(text, ignoreCase = true) == true) score += 8
+                            if (contentDesc != null && node.description?.contains(contentDesc, ignoreCase = true) == true) score += 6
+                            if (node.clickable) score += 2
+                            score
+                        }
+                        .take(5)
                         .joinToString("\n") { it.toCompactString() }
+
                     return CallToolResult(
                         content = listOf(
                             ContentItem(
-                                text = "No UI element matched selector criteria: text=$text, resource_id=$resId, desc=$contentDesc, class_name=$className, match_type=$matchType.\n" +
-                                       "Available candidate elements on screen (${allNodes.size} total nodes, showing top candidates):\n$candidates"
+                                text = "${pkgMismatchWarning}No UI element matched selector criteria: text=$text, resource_id=$resId, desc=$contentDesc, class_name=$className, match_type=$matchType.\n" +
+                                       "Top candidate elements on screen (${allNodes.size} total nodes, showing top 5 candidates):\n$rankedCandidates"
                             )
                         ),
                         isError = true
@@ -1997,33 +2039,73 @@ class McpProtocolHandler(
             "install_apk" -> {
                 val rawPath = args["path"]?.jsonPrimitive?.contentOrNull
                     ?: args["file_path"]?.jsonPrimitive?.contentOrNull
-                    ?: throw IllegalArgumentException("Missing path or file_path")
-                val reinstall = args["reinstall"]?.jsonPrimitive?.booleanOrNull ?: true
-                val downgrade = args["downgrade"]?.jsonPrimitive?.booleanOrNull ?: true
-                val grantPerms = args["grant_permissions"]?.jsonPrimitive?.booleanOrNull ?: true
-
-                // SELinux policy: system_server cannot read /sdcard or /storage directly.
-                // Stage the APK in /data/local/tmp if it's located elsewhere.
-                val needsStaging = !rawPath.startsWith("/data/local/tmp/")
-                val stagedPath = if (needsStaging) "/data/local/tmp/_mcp_staged_${System.currentTimeMillis()}.apk" else rawPath
+                    ?: args["apk_path"]?.jsonPrimitive?.contentOrNull
+                    ?: throw IllegalArgumentException("Missing path, file_path, or apk_path")
+                val reinstall = args["reinstall"]?.jsonPrimitive?.booleanOrNull
+                    ?: args["allow_reinstall"]?.jsonPrimitive?.booleanOrNull ?: true
+                val downgrade = args["downgrade"]?.jsonPrimitive?.booleanOrNull
+                    ?: args["allow_downgrade"]?.jsonPrimitive?.booleanOrNull ?: true
+                val grantPerms = args["grant_permissions"]?.jsonPrimitive?.booleanOrNull
+                    ?: args["grantPermissions"]?.jsonPrimitive?.booleanOrNull ?: true
 
                 val flags = StringBuilder()
                 if (reinstall) flags.append(" -r")
                 if (downgrade) flags.append(" -d")
                 if (grantPerms) flags.append(" -g")
 
+                // Check if the APK to install is AndroidMCP itself
+                val isSelfUpdate = try {
+                    val archiveInfo = context.packageManager.getPackageArchiveInfo(rawPath, 0)
+                    archiveInfo?.packageName == context.packageName
+                } catch (_: Throwable) {
+                    false
+                }
+
+                if (isSelfUpdate) {
+                    // Reinstalling the server itself kills its own process.
+                    // Dispatch detached installation so client gets a clean response before restart.
+                    val detachedCmd = "sleep 1 && chmod 666 \"$rawPath\" && pm install$flags \"$rawPath\""
+                    if (RootBridge.isRootAvailable()) {
+                        RootBridge.exec("nohup sh -c '$detachedCmd' >/dev/null 2>&1 &")
+                    } else if (ShizukuBridge.hasPermission()) {
+                        ShizukuBridge.exec("nohup", "sh", "-c", detachedCmd)
+                    }
+                    return CallToolResult(
+                        content = listOf(
+                            ContentItem(
+                                text = "Self-update detected for ${context.packageName}. Installation scheduled in detached background process. " +
+                                       "Server will restart automatically."
+                            )
+                        )
+                    )
+                }
+
+                // SELinux policy: system_server cannot read /sdcard or /storage directly.
+                // Stage the APK in /data/local/tmp if it's located elsewhere.
+                val needsStaging = !rawPath.startsWith("/data/local/tmp/")
+                val stagedPath = if (needsStaging) "/data/local/tmp/_mcp_staged_${System.currentTimeMillis()}.apk" else rawPath
+
                 val execCmd = if (needsStaging) {
                     "cp \"$rawPath\" \"$stagedPath\" && chmod 666 \"$stagedPath\" && pm install$flags \"$stagedPath\"; ret=\$?; rm -f \"$stagedPath\"; exit \$ret"
                 } else {
-                    "pm install$flags \"$rawPath\""
+                    "chmod 666 \"$rawPath\" && pm install$flags \"$rawPath\""
                 }
 
-                val (code, out) = if (ShizukuBridge.hasPermission()) {
-                    ShizukuBridge.exec("sh", "-c", execCmd)
+                var (code, out) = if (ShizukuBridge.hasPermission()) {
+                    ShizukuBridge.execWithTimeout(45000L, "sh", "-c", execCmd)
                 } else if (RootBridge.isRootAvailable()) {
-                    RootBridge.exec(execCmd)
+                    RootBridge.exec(execCmd, timeoutMs = 45000L)
                 } else {
                     -1 to "Shizuku or Root required to silently install APK"
+                }
+
+                // Fallback to Root if Shizuku failed with permission denial or non-zero exit
+                if (code != 0 && RootBridge.isRootAvailable()) {
+                    val rootRes = RootBridge.exec(execCmd, timeoutMs = 45000L)
+                    if (rootRes.first == 0 || !rootRes.second.contains("Failure", ignoreCase = true)) {
+                        code = rootRes.first
+                        out = rootRes.second
+                    }
                 }
 
                 CallToolResult(

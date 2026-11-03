@@ -122,10 +122,11 @@ class McpHttpServer(
                     call.respondText(jsonConfig.encodeToString(json), ContentType.Application.Json)
                 }
 
-                // Quick Screenshot API (Supports optional Set-of-Mark badges)
+                // Quick Screenshot API (Supports optional Set-of-Mark badges and scaling)
                 get("/api/screenshot") {
                     val som = call.request.queryParameters["som"] == "true"
                     val quality = call.request.queryParameters["quality"]?.toIntOrNull() ?: 80
+                    val scale = (call.request.queryParameters["scale"]?.toFloatOrNull() ?: 1.0f).coerceIn(0.1f, 1.0f)
                     var bmp = ScreenCapturer.captureBitmap()
                     if (bmp != null) {
                         if (som) {
@@ -133,6 +134,13 @@ class McpHttpServer(
                             if (tree != null) {
                                 val flat = UiTreeFlattener.flattenInteractive(tree).filter { it.id > 0 }
                                 bmp = SetOfMarkAnnotator.annotate(bmp, flat)
+                            }
+                        }
+                        if (scale < 1.0f) {
+                            val scaled = ScreenCapturer.scaleBitmap(bmp, scale)
+                            if (scaled != bmp) {
+                                bmp.recycle()
+                                bmp = scaled
                             }
                         }
                         val bytes = ScreenCapturer.toByteArrayJpeg(bmp, quality)
@@ -313,6 +321,7 @@ class McpHttpServer(
     }
 
     private suspend fun handleRpcCall(call: ApplicationCall, sseMessages: MutableSharedFlow<Pair<String, String>>) {
+        var reqId: kotlinx.serialization.json.JsonElement? = null
         try {
             val sessionId = call.request.queryParameters["sessionId"]
             val body = call.receiveText()
@@ -321,7 +330,16 @@ class McpHttpServer(
                 return
             }
             val req = jsonConfig.decodeFromString<JsonRpcRequest>(body)
-            val resp = handler.handleJsonRpc(req)
+            reqId = req.id
+            val resp = try {
+                handler.handleJsonRpc(req)
+            } catch (t: Throwable) {
+                Log.e(TAG, "Exception in handleJsonRpc: ${t.message}", t)
+                JsonRpcResponse(
+                    id = reqId,
+                    error = JsonRpcError(code = -32000, message = t.message ?: "Internal error")
+                )
+            }
 
             if (resp == null) {
                 // Notification (e.g. notifications/initialized): Do not emit to SSE and respond 202 Accepted
@@ -343,10 +361,13 @@ class McpHttpServer(
             Log.e(TAG, "Error handling RPC POST: ${e.message}", e)
             val errResp = JsonRpcResponse(
                 jsonrpc = "2.0",
-                id = null,
-                error = JsonRpcError(code = -32700, message = "Parse error: ${e.message}")
+                id = reqId,
+                error = JsonRpcError(
+                    code = if (reqId != null) -32000 else -32700,
+                    message = if (reqId != null) "Execution error: ${e.message}" else "Parse error: ${e.message}"
+                )
             )
-            call.respondText(jsonConfig.encodeToString(errResp), ContentType.Application.Json, HttpStatusCode.BadRequest)
+            call.respondText(jsonConfig.encodeToString(errResp), ContentType.Application.Json, if (reqId != null) HttpStatusCode.OK else HttpStatusCode.BadRequest)
         }
     }
 

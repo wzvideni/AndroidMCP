@@ -21,37 +21,51 @@ object InputController {
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         // 1. Try LSPosed in-process click if target app is hooked
         if (!targetPackage.isNullOrBlank() && (!targetId.isNullOrBlank() || viewId != null)) {
-            val hookResp = HookClientManager.sendCommand(
-                targetPackage,
-                HookIpcRequest(
-                    action = "CLICK_VIEW",
-                    targetPackage = targetPackage,
-                    targetId = targetId,
-                    viewId = viewId
-                )
-            )
-            if (hookResp.success) {
-                return@withContext true to "LSPosed in-process click dispatched: ${hookResp.message}"
-            }
+            try {
+                val hookResp = kotlinx.coroutines.withTimeoutOrNull(2000L) {
+                    HookClientManager.sendCommand(
+                        targetPackage,
+                        HookIpcRequest(
+                            action = "CLICK_VIEW",
+                            targetPackage = targetPackage,
+                            targetId = targetId,
+                            viewId = viewId
+                        )
+                    )
+                }
+                if (hookResp?.success == true) {
+                    return@withContext true to "LSPosed in-process click dispatched: ${hookResp.message}"
+                }
+            } catch (_: Throwable) {}
         }
 
         // 2. Try Shizuku fast input
         if (ShizukuBridge.hasPermission()) {
-            val ok = ShizukuBridge.injectTap(x, y)
-            if (ok) return@withContext true to "Shizuku tap dispatched at ($x, $y)"
+            try {
+                val ok = kotlinx.coroutines.withTimeoutOrNull(3500L) {
+                    ShizukuBridge.injectTap(x, y)
+                } ?: false
+                if (ok) return@withContext true to "Shizuku tap dispatched at ($x, $y)"
+            } catch (_: Throwable) {}
         }
 
         // 3. Try Root input
         if (RootBridge.isRootAvailable()) {
-            val (code, out) = RootBridge.exec("input tap ${x.toInt()} ${y.toInt()}")
-            if (code == 0) return@withContext true to "Root tap dispatched at ($x, $y)"
+            try {
+                val (code, _) = RootBridge.exec("input tap ${x.toInt()} ${y.toInt()}", timeoutMs = 3500L)
+                if (code == 0) return@withContext true to "Root tap dispatched at ($x, $y)"
+            } catch (_: Throwable) {}
         }
 
         // 4. Try Accessibility gesture
         val a11y = McpAccessibilityService.instance
         if (a11y != null) {
-            val ok = a11y.click(x, y)
-            if (ok) return@withContext true to "Accessibility gesture click dispatched at ($x, $y)"
+            try {
+                val ok = kotlinx.coroutines.withTimeoutOrNull(3500L) {
+                    a11y.click(x, y)
+                } ?: false
+                if (ok) return@withContext true to "Accessibility gesture click dispatched at ($x, $y)"
+            } catch (_: Throwable) {}
         }
 
         false to "No available privilege backend (Shizuku, Root, or Accessibility) to execute click"
@@ -64,23 +78,35 @@ object InputController {
         y2: Float,
         durationMs: Long = 300
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val actionTimeout = (durationMs + 3000L).coerceAtLeast(4000L)
+
         // 1. Try Shizuku
         if (ShizukuBridge.hasPermission()) {
-            val ok = ShizukuBridge.injectSwipe(x1, y1, x2, y2, durationMs)
-            if (ok) return@withContext true to "Shizuku swipe ($x1, $y1) -> ($x2, $y2)"
+            try {
+                val ok = kotlinx.coroutines.withTimeoutOrNull(actionTimeout) {
+                    ShizukuBridge.injectSwipe(x1, y1, x2, y2, durationMs)
+                } ?: false
+                if (ok) return@withContext true to "Shizuku swipe ($x1, $y1) -> ($x2, $y2)"
+            } catch (_: Throwable) {}
         }
 
-        // 3. Try Root
+        // 2. Try Root
         if (RootBridge.isRootAvailable()) {
-            val (code, _) = RootBridge.exec("input swipe ${x1.toInt()} ${y1.toInt()} ${x2.toInt()} ${y2.toInt()} $durationMs")
-            if (code == 0) return@withContext true to "Root swipe ($x1, $y1) -> ($x2, $y2)"
+            try {
+                val (code, _) = RootBridge.exec("input swipe ${x1.toInt()} ${y1.toInt()} ${x2.toInt()} ${y2.toInt()} $durationMs", timeoutMs = actionTimeout)
+                if (code == 0) return@withContext true to "Root swipe ($x1, $y1) -> ($x2, $y2)"
+            } catch (_: Throwable) {}
         }
 
         // 3. Try Accessibility
         val a11y = McpAccessibilityService.instance
         if (a11y != null) {
-            val ok = a11y.swipe(x1, y1, x2, y2, durationMs)
-            if (ok) return@withContext true to "Accessibility swipe ($x1, $y1) -> ($x2, $y2)"
+            try {
+                val ok = kotlinx.coroutines.withTimeoutOrNull(actionTimeout) {
+                    a11y.swipe(x1, y1, x2, y2, durationMs)
+                } ?: false
+                if (ok) return@withContext true to "Accessibility swipe ($x1, $y1) -> ($x2, $y2)"
+            } catch (_: Throwable) {}
         }
 
         false to "No available privilege backend to execute swipe"
@@ -94,39 +120,55 @@ object InputController {
         targetId: String? = null,
         viewId: Int? = null
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val actionTimeout = (durationMs + 3000L).coerceAtLeast(4000L)
+
         // 1. Try LSPosed in-process long click if target app is hooked
         if (!targetPackage.isNullOrBlank() && (!targetId.isNullOrBlank() || viewId != null)) {
-            val hookResp = HookClientManager.sendCommand(
-                targetPackage,
-                HookIpcRequest(
-                    action = "LONG_CLICK_VIEW",
-                    targetPackage = targetPackage,
-                    targetId = targetId,
-                    viewId = viewId
-                )
-            )
-            if (hookResp.success) {
-                return@withContext true to "LSPosed in-process long-click dispatched: ${hookResp.message}"
-            }
+            try {
+                val hookResp = kotlinx.coroutines.withTimeoutOrNull(2000L) {
+                    HookClientManager.sendCommand(
+                        targetPackage,
+                        HookIpcRequest(
+                            action = "LONG_CLICK_VIEW",
+                            targetPackage = targetPackage,
+                            targetId = targetId,
+                            viewId = viewId
+                        )
+                    )
+                }
+                if (hookResp?.success == true) {
+                    return@withContext true to "LSPosed in-process long-click dispatched: ${hookResp.message}"
+                }
+            } catch (_: Throwable) {}
         }
 
         // 2. Try Shizuku fast input
         if (ShizukuBridge.hasPermission()) {
-            val ok = ShizukuBridge.injectSwipe(x, y, x, y, durationMs)
-            if (ok) return@withContext true to "Shizuku long press dispatched at ($x, $y) for ${durationMs}ms"
+            try {
+                val ok = kotlinx.coroutines.withTimeoutOrNull(actionTimeout) {
+                    ShizukuBridge.injectSwipe(x, y, x, y, durationMs)
+                } ?: false
+                if (ok) return@withContext true to "Shizuku long press dispatched at ($x, $y) for ${durationMs}ms"
+            } catch (_: Throwable) {}
         }
 
         // 3. Try Root input
         if (RootBridge.isRootAvailable()) {
-            val (code, _) = RootBridge.exec("input swipe ${x.toInt()} ${y.toInt()} ${x.toInt()} ${y.toInt()} $durationMs")
-            if (code == 0) return@withContext true to "Root long press dispatched at ($x, $y) for ${durationMs}ms"
+            try {
+                val (code, _) = RootBridge.exec("input swipe ${x.toInt()} ${y.toInt()} ${x.toInt()} ${y.toInt()} $durationMs", timeoutMs = actionTimeout)
+                if (code == 0) return@withContext true to "Root long press dispatched at ($x, $y) for ${durationMs}ms"
+            } catch (_: Throwable) {}
         }
 
         // 4. Try Accessibility gesture
         val a11y = McpAccessibilityService.instance
         if (a11y != null) {
-            val ok = a11y.longPress(x, y, durationMs)
-            if (ok) return@withContext true to "Accessibility long press dispatched at ($x, $y) for ${durationMs}ms"
+            try {
+                val ok = kotlinx.coroutines.withTimeoutOrNull(actionTimeout) {
+                    a11y.longPress(x, y, durationMs)
+                } ?: false
+                if (ok) return@withContext true to "Accessibility long press dispatched at ($x, $y) for ${durationMs}ms"
+            } catch (_: Throwable) {}
         }
 
         false to "No available privilege backend to execute long press"
@@ -141,24 +183,35 @@ object InputController {
         dragMs: Long = 500
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         val totalDuration = holdMs + dragMs
+        val actionTimeout = (totalDuration + 3000L).coerceAtLeast(4000L)
 
         // 1. Try Shizuku
         if (ShizukuBridge.hasPermission()) {
-            val ok = ShizukuBridge.injectSwipe(x1, y1, x2, y2, totalDuration)
-            if (ok) return@withContext true to "Shizuku drag ($x1, $y1) -> ($x2, $y2)"
+            try {
+                val ok = kotlinx.coroutines.withTimeoutOrNull(actionTimeout) {
+                    ShizukuBridge.injectSwipe(x1, y1, x2, y2, totalDuration)
+                } ?: false
+                if (ok) return@withContext true to "Shizuku drag ($x1, $y1) -> ($x2, $y2)"
+            } catch (_: Throwable) {}
         }
 
         // 2. Try Root
         if (RootBridge.isRootAvailable()) {
-            val (code, _) = RootBridge.exec("input swipe ${x1.toInt()} ${y1.toInt()} ${x2.toInt()} ${y2.toInt()} $totalDuration")
-            if (code == 0) return@withContext true to "Root drag ($x1, $y1) -> ($x2, $y2)"
+            try {
+                val (code, _) = RootBridge.exec("input swipe ${x1.toInt()} ${y1.toInt()} ${x2.toInt()} ${y2.toInt()} $totalDuration", timeoutMs = actionTimeout)
+                if (code == 0) return@withContext true to "Root drag ($x1, $y1) -> ($x2, $y2)"
+            } catch (_: Throwable) {}
         }
 
         // 3. Try Accessibility
         val a11y = McpAccessibilityService.instance
         if (a11y != null) {
-            val ok = a11y.dragAndDrop(x1, y1, x2, y2, holdMs, dragMs)
-            if (ok) return@withContext true to "Accessibility drag ($x1, $y1) -> ($x2, $y2)"
+            try {
+                val ok = kotlinx.coroutines.withTimeoutOrNull(actionTimeout) {
+                    a11y.dragAndDrop(x1, y1, x2, y2, holdMs, dragMs)
+                } ?: false
+                if (ok) return@withContext true to "Accessibility drag ($x1, $y1) -> ($x2, $y2)"
+            } catch (_: Throwable) {}
         }
 
         false to "No available privilege backend to execute drag and drop"
@@ -167,22 +220,32 @@ object InputController {
     suspend fun inputText(text: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         // 1. Try Accessibility text injection (fast & handles unicode/chinese directly)
         val a11y = McpAccessibilityService.instance
-        if (a11y != null && a11y.inputText(text)) {
-            return@withContext true to "Accessibility text buffer set: '$text'"
+        if (a11y != null) {
+            try {
+                if (a11y.inputText(text)) {
+                    return@withContext true to "Accessibility text buffer set: '$text'"
+                }
+            } catch (_: Throwable) {}
         }
 
         // 2. Try Shizuku input text
         if (ShizukuBridge.hasPermission()) {
-            val escaped = text.replace(" ", "%s").replace("'", "\\'")
-            val ok = ShizukuBridge.injectText(escaped)
-            if (ok) return@withContext true to "Shizuku text typed"
+            try {
+                val escaped = text.replace(" ", "%s").replace("'", "\\'")
+                val ok = kotlinx.coroutines.withTimeoutOrNull(5000L) {
+                    ShizukuBridge.injectText(escaped)
+                } ?: false
+                if (ok) return@withContext true to "Shizuku text typed"
+            } catch (_: Throwable) {}
         }
 
         // 3. Try Root input text
         if (RootBridge.isRootAvailable()) {
-            val escaped = text.replace(" ", "%s").replace("'", "\\'")
-            val (code, _) = RootBridge.exec("input text '$escaped'")
-            if (code == 0) return@withContext true to "Root text typed"
+            try {
+                val escaped = text.replace(" ", "%s").replace("'", "\\'")
+                val (code, _) = RootBridge.exec("input text '$escaped'", timeoutMs = 5000L)
+                if (code == 0) return@withContext true to "Root text typed"
+            } catch (_: Throwable) {}
         }
 
         false to "No available privilege backend to input text"
@@ -289,23 +352,31 @@ object InputController {
             return@withContext false to "Unknown or unsupported key: '$key'"
         }
 
-        // Try Accessibility global actions for navigation keys
+        // 1. Try Accessibility global actions for navigation keys
         val a11y = McpAccessibilityService.instance
         if (a11y != null && globalAction != null) {
-            val ok = a11y.performGlobalAction(globalAction)
-            if (ok) return@withContext true to "Accessibility global action performed for $targetKey"
+            try {
+                val ok = a11y.performGlobalAction(globalAction)
+                if (ok) return@withContext true to "Accessibility global action performed for $targetKey"
+            } catch (_: Throwable) {}
         }
 
-        // Try Shizuku key injection
+        // 2. Try Shizuku fast key injection (< 5ms via binder or 3500ms timeout)
         if (ShizukuBridge.hasPermission()) {
-            val ok = ShizukuBridge.injectKeyEvent(keyCode)
-            if (ok) return@withContext true to "Shizuku keyevent $keyCode ($targetKey)"
+            try {
+                val ok = kotlinx.coroutines.withTimeoutOrNull(3500L) {
+                    ShizukuBridge.injectKeyEvent(keyCode)
+                } ?: false
+                if (ok) return@withContext true to "Shizuku keyevent $keyCode ($targetKey)"
+            } catch (_: Throwable) {}
         }
 
-        // Try Root key injection
+        // 3. Try Root key injection (strict 3500ms timeout)
         if (RootBridge.isRootAvailable()) {
-            val (code, _) = RootBridge.exec("input keyevent $keyCode")
-            if (code == 0) return@withContext true to "Root keyevent $keyCode ($targetKey)"
+            try {
+                val (code, _) = RootBridge.exec("input keyevent $keyCode", timeoutMs = 3500L)
+                if (code == 0) return@withContext true to "Root keyevent $keyCode ($targetKey)"
+            } catch (_: Throwable) {}
         }
 
         false to "Failed to dispatch key $targetKey (code $keyCode)"

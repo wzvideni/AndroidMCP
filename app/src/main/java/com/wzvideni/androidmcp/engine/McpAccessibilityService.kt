@@ -171,7 +171,7 @@ class McpAccessibilityService : AccessibilityService() {
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
         val deferred = CompletableDeferred<Boolean>()
 
-        dispatchGesture(gesture, object : GestureResultCallback() {
+        val started = dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 deferred.complete(true)
             }
@@ -181,7 +181,10 @@ class McpAccessibilityService : AccessibilityService() {
             }
         }, null)
 
-        deferred.await()
+        if (!started) return@withContext false
+        kotlinx.coroutines.withTimeoutOrNull(3000L) {
+            deferred.await()
+        } ?: false
     }
 
     suspend fun swipe(
@@ -199,7 +202,7 @@ class McpAccessibilityService : AccessibilityService() {
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
         val deferred = CompletableDeferred<Boolean>()
 
-        dispatchGesture(gesture, object : GestureResultCallback() {
+        val started = dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 deferred.complete(true)
             }
@@ -209,7 +212,11 @@ class McpAccessibilityService : AccessibilityService() {
             }
         }, null)
 
-        deferred.await()
+        if (!started) return@withContext false
+        val timeout = (durationMs + 2000L).coerceAtLeast(3000L)
+        kotlinx.coroutines.withTimeoutOrNull(timeout) {
+            deferred.await()
+        } ?: false
     }
 
     suspend fun longPress(x: Float, y: Float, durationMs: Long = 800): Boolean = withContext(Dispatchers.Main) {
@@ -218,7 +225,7 @@ class McpAccessibilityService : AccessibilityService() {
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
         val deferred = CompletableDeferred<Boolean>()
 
-        dispatchGesture(gesture, object : GestureResultCallback() {
+        val started = dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 deferred.complete(true)
             }
@@ -228,7 +235,11 @@ class McpAccessibilityService : AccessibilityService() {
             }
         }, null)
 
-        deferred.await()
+        if (!started) return@withContext false
+        val timeout = (durationMs + 2000L).coerceAtLeast(3000L)
+        kotlinx.coroutines.withTimeoutOrNull(timeout) {
+            deferred.await()
+        } ?: false
     }
 
     suspend fun dragAndDrop(
@@ -247,7 +258,7 @@ class McpAccessibilityService : AccessibilityService() {
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
         val deferred = CompletableDeferred<Boolean>()
 
-        dispatchGesture(gesture, object : GestureResultCallback() {
+        val started = dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
                 deferred.complete(true)
             }
@@ -257,7 +268,11 @@ class McpAccessibilityService : AccessibilityService() {
             }
         }, null)
 
-        deferred.await()
+        if (!started) return@withContext false
+        val timeout = (holdMs + dragMs + 2000L).coerceAtLeast(3000L)
+        kotlinx.coroutines.withTimeoutOrNull(timeout) {
+            deferred.await()
+        } ?: false
     }
 
     fun inputText(text: String): Boolean {
@@ -272,26 +287,38 @@ class McpAccessibilityService : AccessibilityService() {
     @RequiresApi(Build.VERSION_CODES.R)
     suspend fun takeScreenshotA11y(): Bitmap? = withContext(Dispatchers.Main) {
         val deferred = CompletableDeferred<Bitmap?>()
-        takeScreenshot(
-            Display.DEFAULT_DISPLAY,
-            mainExecutor,
-            object : TakeScreenshotCallback {
-                override fun onSuccess(screenshot: ScreenshotResult) {
-                    val bitmap = Bitmap.wrapHardwareBuffer(
-                        screenshot.hardwareBuffer,
-                        screenshot.colorSpace
-                    )
-                    val copy = bitmap?.copy(Bitmap.Config.ARGB_8888, false)
-                    screenshot.hardwareBuffer.close()
-                    deferred.complete(copy)
-                }
+        try {
+            takeScreenshot(
+                Display.DEFAULT_DISPLAY,
+                mainExecutor,
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(screenshot: ScreenshotResult) {
+                        try {
+                            val bitmap = Bitmap.wrapHardwareBuffer(
+                                screenshot.hardwareBuffer,
+                                screenshot.colorSpace
+                            )
+                            val copy = bitmap?.copy(Bitmap.Config.ARGB_8888, false)
+                            screenshot.hardwareBuffer.close()
+                            deferred.complete(copy)
+                        } catch (e: Throwable) {
+                            Log.e(TAG, "takeScreenshotA11y buffer copy failed: ${e.message}")
+                            deferred.complete(null)
+                        }
+                    }
 
-                override fun onFailure(errorCode: Int) {
-                    Log.e(TAG, "takeScreenshotA11y failed with code $errorCode")
-                    deferred.complete(null)
+                    override fun onFailure(errorCode: Int) {
+                        Log.e(TAG, "takeScreenshotA11y failed with code $errorCode")
+                        deferred.complete(null)
+                    }
                 }
+            )
+            kotlinx.coroutines.withTimeoutOrNull(4000L) {
+                deferred.await()
             }
-        )
-        deferred.await()
+        } catch (e: Throwable) {
+            Log.e(TAG, "takeScreenshotA11y invocation failed: ${e.message}")
+            null
+        }
     }
 }

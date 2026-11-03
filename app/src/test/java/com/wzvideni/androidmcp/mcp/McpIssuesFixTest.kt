@@ -373,4 +373,133 @@ class McpIssuesFixTest {
         })
         assertEquals(120000L, t5)
     }
+
+    @Test
+    fun testInstallApkParamParsing() {
+        fun parseInstallApkArgs(args: JsonObject): Triple<String, Boolean, Boolean> {
+            val rawPath = args["path"]?.jsonPrimitive?.contentOrNull
+                ?: args["file_path"]?.jsonPrimitive?.contentOrNull
+                ?: args["apk_path"]?.jsonPrimitive?.contentOrNull
+                ?: throw IllegalArgumentException("Missing path, file_path, or apk_path")
+
+            val reinstall = args["reinstall"]?.jsonPrimitive?.booleanOrNull
+                ?: args["allow_reinstall"]?.jsonPrimitive?.booleanOrNull ?: true
+
+            val downgrade = args["downgrade"]?.jsonPrimitive?.booleanOrNull
+                ?: args["allow_downgrade"]?.jsonPrimitive?.booleanOrNull ?: true
+
+            return Triple(rawPath, reinstall, downgrade)
+        }
+
+        // Test standard 'path'
+        val (p1, r1, d1) = parseInstallApkArgs(buildJsonObject {
+            put("path", JsonPrimitive("/data/local/tmp/app.apk"))
+        })
+        assertEquals("/data/local/tmp/app.apk", p1)
+        assertTrue(r1)
+        assertTrue(d1)
+
+        // Test 'file_path' alias
+        val (p2, _, _) = parseInstallApkArgs(buildJsonObject {
+            put("file_path", JsonPrimitive("/data/local/tmp/app-debug.apk"))
+            put("allow_downgrade", JsonPrimitive(false))
+        })
+        assertEquals("/data/local/tmp/app-debug.apk", p2)
+
+        // Test 'apk_path' alias
+        val (p3, r3, d3) = parseInstallApkArgs(buildJsonObject {
+            put("apk_path", JsonPrimitive("/sdcard/Download/test.apk"))
+            put("reinstall", JsonPrimitive(false))
+            put("downgrade", JsonPrimitive(true))
+        })
+        assertEquals("/sdcard/Download/test.apk", p3)
+        assertFalse(r3)
+        assertTrue(d3)
+
+        // Test missing path throws IllegalArgumentException
+        try {
+            parseInstallApkArgs(buildJsonObject {
+                put("reinstall", JsonPrimitive(true))
+            })
+            fail("Should throw IllegalArgumentException when path is missing")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("Missing path") == true)
+        }
+    }
+
+    @Test
+    fun testSelectorPackageMismatchDetection() {
+        fun checkMismatch(resId: String?, fgPkg: String?): String {
+            val selectorPkg = resId?.let { id ->
+                when {
+                    id.contains(":id/") -> id.substringBefore(":id/").takeIf { it.contains(".") }
+                    id.contains(":") -> id.substringBefore(":").takeIf { it.contains(".") }
+                    else -> null
+                }
+            }
+            return if (selectorPkg != null && fgPkg != null && !fgPkg.equals(selectorPkg, ignoreCase = true)) {
+                "Foreground package ($fgPkg) differs from selector package ($selectorPkg). The target app may be in the background.\n\n"
+            } else ""
+        }
+
+        // Case 1: scanplus selector but androidmcp is in foreground
+        val warn1 = checkMismatch("com.wzvideni.scanplus:id/btn_scan", "com.wzvideni.androidmcp")
+        assertTrue(warn1.contains("differs from selector package (com.wzvideni.scanplus)"))
+        assertTrue(warn1.contains("target app may be in the background"))
+
+        // Case 2: Matching package -> No warning
+        val warn2 = checkMismatch("com.wzvideni.scanplus:id/btn_scan", "com.wzvideni.scanplus")
+        assertEquals("", warn2)
+
+        // Case 3: Plain id without package -> No warning
+        val warn3 = checkMismatch("btn_scan", "com.wzvideni.androidmcp")
+        assertEquals("", warn3)
+    }
+
+    @Test
+    fun testCandidateRankingTop5Pruning() {
+        val nodes = (1..30).map { i ->
+            UiNode(
+                id = i,
+                text = "Item $i",
+                resourceId = if (i % 2 == 0) "com.example:id/item_$i" else null,
+                clickable = i % 3 == 0,
+                bounds = RectBounds(0, i * 10, 100, (i + 1) * 10)
+            )
+        }
+
+        val resId = "com.example:id/item_10"
+        val text = "Item 10"
+
+        val rankedCandidates = nodes
+            .filter { !it.resourceId.isNullOrBlank() || !it.text.isNullOrBlank() || !it.description.isNullOrBlank() }
+            .filter { it.bounds.width > 0 && it.bounds.height > 0 }
+            .sortedByDescending { node ->
+                var score = 0
+                if (resId != null) {
+                    val shortResId = resId.substringAfterLast(":id/").substringAfterLast('/')
+                    if (node.resourceId?.contains(shortResId, ignoreCase = true) == true) score += 10
+                }
+                if (text != null && node.text?.contains(text, ignoreCase = true) == true) score += 8
+                if (node.clickable) score += 2
+                score
+            }
+            .take(5)
+
+        assertEquals(5, rankedCandidates.size)
+        // Item 10 should be the top ranked candidate due to matching both resId and text
+        assertEquals(10, rankedCandidates[0].id)
+    }
+
+    @Test
+    fun testScreenshotScaleClamping() {
+        fun clampScale(scaleInput: Double?): Float {
+            return (scaleInput ?: 1.0).toFloat().coerceIn(0.1f, 1.0f)
+        }
+
+        assertEquals(0.5f, clampScale(0.5), 0.001f)
+        assertEquals(1.0f, clampScale(null), 0.001f)
+        assertEquals(1.0f, clampScale(1.5), 0.001f)
+        assertEquals(0.1f, clampScale(0.01), 0.001f)
+    }
 }

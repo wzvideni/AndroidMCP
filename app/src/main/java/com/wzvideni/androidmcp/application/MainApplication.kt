@@ -17,6 +17,12 @@ class MainApplication : ModuleApplication() {
          */
         // Your code here.
 
+        val originalHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            android.util.Log.e("MainApplication", "Uncaught exception on thread ${thread.name}: ${throwable.message}", throwable)
+            originalHandler?.uncaughtException(thread, throwable)
+        }
+
         startKoin {
             // 在 Debug 构建下输出 Koin 日志，Release 下关闭避免性能开销
             androidLogger(if (com.wzvideni.androidmcp.BuildConfig.DEBUG) Level.DEBUG else Level.NONE)

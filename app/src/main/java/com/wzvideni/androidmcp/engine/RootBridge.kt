@@ -67,7 +67,7 @@ object RootBridge {
         return isRootGranted
     }
 
-    suspend fun exec(command: String, timeoutMs: Long = 60000L): Pair<Int, String> = withContext(Dispatchers.IO) {
+    suspend fun exec(command: String, timeoutMs: Long = 15000L): Pair<Int, String> = withContext(Dispatchers.IO) {
         if (!checkRootAsync()) return@withContext -1 to "Root is not granted"
         try {
             val res = withTimeoutOrNull(timeoutMs) {
@@ -87,9 +87,14 @@ object RootBridge {
         if (!checkRootAsync()) return@withContext null
         try {
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "screencap -p"))
-            val bytes = process.inputStream.readBytes()
-            process.waitFor()
-            if (bytes.isNotEmpty()) bytes else null
+            withTimeoutOrNull(5000L) {
+                val bytes = process.inputStream.readBytes()
+                process.waitFor()
+                if (bytes.isNotEmpty()) bytes else null
+            } ?: run {
+                try { process.destroy() } catch (_: Throwable) {}
+                null
+            }
         } catch (e: Throwable) {
             Log.e(TAG, "Root screencap failed: ${e.message}")
             null

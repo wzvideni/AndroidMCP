@@ -59,7 +59,7 @@
 | `get_activity_stack` | `max_tasks?: int` | **任务栈与 Activity 深度解析**：提取前台/后台 Task 栈层级、当前聚焦 Activity、任务 ID 及可见性。 |
 | `click_by_selector` | `text?`, `resource_id?`, `content_desc?`, `class_name?`, `match_type?` | **智能选择器点击**：无需计算坐标，直接根据文字或 ID 自动查找目标节点、计算中心点并完成点击。 |
 | `wait_for_element` | `text?`, `resource_id?`, `condition?`, `timeout_ms?`, `auto_click?: boolean` | **智能等待元素**：持续监听 UI 树直至目标元素出现/消失，支持自动直接点击，彻底解决异步加载竞态。 |
-| `capture_screenshot` | `quality?: int`, `annotate_som?: boolean` | 抓取屏幕图像（支持 Base64 返回与 SoM 角标实时绘制）。 |
+| `capture_screenshot` | `quality?: int`, `scale?: number`, `annotate_som?: boolean` | 抓取屏幕图像（支持 Base64 返回、SoM 角标实时绘制与 scale 图像缩放，降低 Wi-Fi 传输带宽与延迟）。 |
 | `tap` | `x: float`, `y: float`, `element_id?: int` | 模拟屏幕绝对坐标点击或通过 SoM ID 点击。 |
 | `long_press` | `x?`, `y?`, `element_id?`, `duration_ms?: int` | **长按手势**：支持按坐标或 SoM ID 长按触发上下文菜单或拖拽起始。 |
 | `swipe` | `x1`, `y1`, `x2`, `y2`, `duration_ms?: int` | 模拟任意轨迹的平滑滑动与手势滚动。 |
@@ -88,7 +88,7 @@
 ### 📱 系统与特权控制
 | 工具名称 | 参数 | 说明 |
 | :--- | :--- | :--- |
-| `install_apk` | `file_path`, `grant_permissions?: boolean`, `allow_downgrade?: boolean` | **静默安装 APK**：通过 Shizuku/Root 静默安装 APK，支持全权限预授权与降级安装（自动适配 Android 16+ FUSE staging）。 |
+| `install_apk` | `path` / `file_path` / `apk_path`, `reinstall?: boolean`, `grant_permissions?: boolean`, `allow_downgrade?: boolean` | **静默安装 APK**：通过 Shizuku/Root 静默安装 APK，支持参数别名映射、全权限预授权、降级安装与自更新保护（自动适配 Android 16+ FUSE staging）。 |
 | `pull_apk` | `package_name`, `destination_path` | **APK 提取备份**：定位设备上已安装 App 的 base.apk 路径并复制到指定目录。 |
 | `get_notifications` | `package_name?`, `filter?`, `limit?: int`, `clear?: boolean` | **系统通知读取**：实时抓取与历史过滤短信验证码、第三方 App 推送、状态栏通知。 |
 | `wait_for_notification` | `package_name?`, `text_contains?`, `timeout_ms?: int` | **异步等待通知**：挂起等待新收到的指定短信/通知（专为 2FA/OTP 验证码自动化设计）。 |

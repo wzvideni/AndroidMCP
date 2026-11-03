@@ -47,6 +47,13 @@ object ScreenCapturer {
         null
     }
 
+    fun scaleBitmap(bitmap: Bitmap, scale: Float): Bitmap {
+        if (scale >= 1.0f || scale <= 0f) return bitmap
+        val targetWidth = (bitmap.width * scale).toInt().coerceAtLeast(1)
+        val targetHeight = (bitmap.height * scale).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
+    }
+
     fun toBase64Jpeg(bitmap: Bitmap, quality: Int = 80): String {
         val out = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.JPEG, quality.coerceIn(10, 100), out)
